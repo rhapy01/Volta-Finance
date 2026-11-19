@@ -1,0 +1,56 @@
+diff --git a/dist/dapp-relay.d.ts b/dist/dapp-relay.d.ts
+index a36abb48871ac7f85b40e61e1bebb84283083441..a65163d283813ce7baac595b9b92a64bdf7f42a1 100644
+--- a/dist/dapp-relay.d.ts
++++ b/dist/dapp-relay.d.ts
+@@ -6,6 +6,8 @@ export interface DappRelayOptions {
+     explicitRelayUrls?: string[];
+     reconnectInterval?: number;
+     maxReconnectAttempts?: number;
++    /** Keep the relay open when the browser tab is backgrounded. Defaults to true. */
++    enableVisibilityHandling?: boolean;
+     existingCredentials?: {
+         privateKey: string;
+         secret: string;
+diff --git a/dist/dapp-relay.js b/dist/dapp-relay.js
+index 8870ac3c07c9a72de7b9ef389fb33932a67ea8e2..03f947fdba7c9dde22cd9d31074ca29fcf950413 100644
+--- a/dist/dapp-relay.js
++++ b/dist/dapp-relay.js
+@@ -93,6 +93,7 @@ export function initiateDappRelay(statusCallback, options = {}) {
+         },
+         reconnectInterval: options.reconnectInterval,
+         maxReconnectAttempts: options.maxReconnectAttempts,
++        enableVisibilityHandling: options.enableVisibilityHandling,
+     });
+     return {
+         client: relayClient,
+diff --git a/dist/relay-client.js b/dist/relay-client.js
+index ba994f08028014dcf978b328c663314f613a54de..67eebc0ed87861501ef9339615d6c73c031336f2 100644
+--- a/dist/relay-client.js
++++ b/dist/relay-client.js
+@@ -269,17 +269,23 @@ export class RelayClient extends EventEmitter {
+         const results = await Promise.allSettled(this.pool.publish(this.config.explicitRelayUrls, wrapped));
+         const fulfilled = results.filter((r) => r.status === "fulfilled");
+         const rejected = results.filter((r) => r.status === "rejected");
+-        if (rejected.length > 0 && this.config.logNetworkActivity) {
++        const isKeepalivePing = displayAction === "ping";
++        if (!isKeepalivePing && rejected.length > 0 && this.config.logNetworkActivity) {
+             for (const r of rejected) {
+                 logError(Scope.Relay, `Failed to publish ${displayAction} to a relay:`, r.reason);
+             }
+         }
+         if (fulfilled.length === 0) {
+             const error = new Error(`Failed to publish ${displayAction} to all relays`);
+-            if (this.config.logNetworkActivity) {
++            if (!isKeepalivePing && this.config.logNetworkActivity) {
+                 logError(Scope.Relay, error.message);
+             }
+-            this.emitDisconnect(error);
++            // A missing keepalive publish ACK is not proof that the peer or
++            // session is dead. The dapp manager reconnects after its separate
++            // pong deadline, so preserve a live session through relay jitter.
++            if (!isKeepalivePing) {
++                this.emitDisconnect(error);
++            }
+             throw error;
+         }
+         if (this.config.logNetworkActivity) {

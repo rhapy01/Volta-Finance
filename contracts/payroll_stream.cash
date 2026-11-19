@@ -1,0 +1,28 @@
+pragma cashscript ^0.14.0;
+
+// A recurring BCH payroll stream. The covenant validates the recipient output
+// and returns the remaining stream balance to the same contract.
+contract PayrollStream(bytes20 recipient, bytes20 funder, int payment, int period) {
+    function claim() {
+        require(this.age >= period);
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(recipient));
+
+        int minerFee = 1000;
+        int currentValue = tx.inputs[this.activeInputIndex].value;
+        int remaining = currentValue - payment - minerFee;
+
+        if (remaining <= payment + minerFee) {
+            require(tx.outputs[0].value == currentValue - minerFee);
+        } else {
+            require(tx.outputs[0].value == payment);
+            require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
+            require(tx.outputs[1].value == remaining);
+        }
+    }
+
+    function reclaim(pubkey pk, sig s) {
+        require(hash160(pk) == funder);
+        require(checkSig(s, pk));
+    }
+}

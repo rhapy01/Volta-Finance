@@ -1,0 +1,14 @@
+pragma cashscript ^0.14.0;
+
+// Owner-controlled vault. The application must still construct outputs and obtain
+// explicit wallet approval; the contract only accepts an owner signature.
+contract TreasuryVault(pubkey ownerPk, pubkey recoveryPk, int recoveryTime) {
+    function withdraw(sig ownerSig) {
+        require(checkSig(ownerSig, ownerPk));
+    }
+
+    function recover(sig recoverySig) {
+        require(tx.time >= recoveryTime);
+        require(checkSig(recoverySig, recoveryPk));
+    }
+}

@@ -1,0 +1,45 @@
+{
+  "contractName": "TreasuryVault",
+  "constructorInputs": [
+    { "name": "ownerPk", "type": "pubkey" },
+    { "name": "recoveryPk", "type": "pubkey" },
+    { "name": "recoveryTime", "type": "int" }
+  ],
+  "abi": [
+    {
+      "name": "withdraw",
+      "inputs": [
+        { "name": "ownerSig", "type": "sig" }
+      ]
+    },
+    {
+      "name": "recover",
+      "inputs": [
+        { "name": "recoverySig", "type": "sig" }
+      ]
+    }
+  ],
+  "bytecode": "OP_3 OP_PICK OP_0 OP_NUMEQUAL OP_IF OP_4 OP_ROLL OP_SWAP OP_CHECKSIG OP_NIP OP_NIP OP_NIP OP_ELSE OP_3 OP_ROLL OP_1 OP_NUMEQUALVERIFY OP_ROT OP_CHECKLOCKTIMEVERIFY OP_DROP OP_ROT OP_ROT OP_CHECKSIG OP_NIP OP_ENDIF",
+  "source": "pragma cashscript ^0.14.0;\n\n// Owner-controlled vault. The application must still construct outputs and obtain\n// explicit wallet approval; the contract only accepts an owner signature.\ncontract TreasuryVault(pubkey ownerPk, pubkey recoveryPk, int recoveryTime) {\n    function withdraw(sig ownerSig) {\n        require(checkSig(ownerSig, ownerPk));\n    }\n\n    function recover(sig recoverySig) {\n        require(tx.time >= recoveryTime);\n        require(checkSig(recoverySig, recoveryPk));\n    }\n}\n",
+  "fingerprint": "4973db0c0e8eb72ef01abbf996279d36f94b0c3c83b3bdfe636f8e13d91b0879",
+  "debug": {
+    "bytecode": "5379009c63547a7cac77777767537a519d7bb1757b7bac7768",
+    "sourceMap": "6:4:8:5;;;;;7:25:7:33;;:35::42;:8::45:1;6:36:8:5;;;:4;10::13::0;;;;11:27:11:39;:8::41:1;;12:25:12:36:0;:38::48;:8::51:1;10:38:13:5;5:0:14:1",
+    "logs": [],
+    "requires": [
+      { "ip": 12, "line": 7 },
+      { "ip": 21, "line": 11 },
+      { "ip": 26, "line": 12 }
+    ],
+    "sourceTags": "9:11:sc;23:23:sc"
+  },
+  "compiler": {
+    "name": "cashc",
+    "version": "0.14.0",
+    "options": {
+      "enforceFunctionParameterTypes": true,
+      "enforceLocktimeGuard": true
+    }
+  },
+  "updatedAt": "2026-11-13T05:22:31.075Z"
+}

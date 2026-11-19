@@ -1,0 +1,18 @@
+pragma cashscript ^0.14.0;
+
+// Non-custodial BCH escrow primitive. Fiat movement remains external to this
+// covenant; only BCH release, refund, and arbiter resolution are enforced.
+contract P2PEscrow(pubkey buyer, pubkey seller, pubkey arbiter, int timeout) {
+    function release(sig sellerSig) {
+        require(checkSig(sellerSig, seller));
+    }
+
+    function refund(sig buyerSig) {
+        require(tx.time >= timeout);
+        require(checkSig(buyerSig, buyer));
+    }
+
+    function dispute(sig arbiterSig) {
+        require(checkSig(arbiterSig, arbiter));
+    }
+}

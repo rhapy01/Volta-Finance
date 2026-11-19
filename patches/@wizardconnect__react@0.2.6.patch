@@ -1,0 +1,34 @@
+diff --git a/dist/hooks/useWizardConnect.js b/dist/hooks/useWizardConnect.js
+index 48972f484aa086148c53dae4734f09d927f68176..1051a98598cca79175e7299befacfeeeb655eb10 100644
+--- a/dist/hooks/useWizardConnect.js
++++ b/dist/hooks/useWizardConnect.js
+@@ -36,7 +36,7 @@ async function retire(manager, relay) {
+  * The returned `manager` can be used to build an app-specific wallet adapter.
+  */
+ export function useWizardConnect(options = {}) {
+-    const { dappName, dappIcon, relayUrls, sessionKey = DEFAULT_SESSION_KEY, persistSession = true, storage, } = options;
++    const { dappName, dappIcon, relayUrls, sessionKey = DEFAULT_SESSION_KEY, persistSession = true, storage, enableVisibilityHandling = true, } = options;
+     const [state, setState] = useState("idle");
+     const [manager, setManager] = useState(null);
+     const [uri, setUri] = useState(null);
+@@ -98,6 +98,7 @@ export function useWizardConnect(options = {}) {
+             }, {
+                 existingCredentials,
+                 explicitRelayUrls: relayUrls,
++                enableVisibilityHandling,
+             });
+             relayRef.current = relay;
+             // Only expose URI for new connections (QR pairing), not reconnects
+diff --git a/dist/types.d.ts b/dist/types.d.ts
+index a3ec7c3a29bc3545b0047b53b4c50c8d33dd04af..087a717963976590e30f1fc9f5fc4615f1b5286c 100644
+--- a/dist/types.d.ts
++++ b/dist/types.d.ts
+@@ -72,6 +72,8 @@ export interface UseWizardConnectOptions {
+     sessionKey?: string;
+     /** Whether to persist session for auto-reconnect. Default: true */
+     persistSession?: boolean;
++    /** Keep the relay open while the dapp is backgrounded during a wallet-app handoff. Default: true. */
++    enableVisibilityHandling?: boolean;
+     /** Custom storage backend. Defaults to localStorage. */
+     storage?: SessionStorage;
+ }

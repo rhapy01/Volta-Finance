@@ -1,0 +1,53 @@
+{
+  "contractName": "P2PEscrow",
+  "constructorInputs": [
+    { "name": "buyer", "type": "pubkey" },
+    { "name": "seller", "type": "pubkey" },
+    { "name": "arbiter", "type": "pubkey" },
+    { "name": "timeout", "type": "int" }
+  ],
+  "abi": [
+    {
+      "name": "release",
+      "inputs": [
+        { "name": "sellerSig", "type": "sig" }
+      ]
+    },
+    {
+      "name": "refund",
+      "inputs": [
+        { "name": "buyerSig", "type": "sig" }
+      ]
+    },
+    {
+      "name": "dispute",
+      "inputs": [
+        { "name": "arbiterSig", "type": "sig" }
+      ]
+    }
+  ],
+  "bytecode": "OP_4 OP_PICK OP_0 OP_NUMEQUAL OP_IF OP_5 OP_ROLL OP_ROT OP_CHECKSIGVERIFY OP_2DROP OP_2DROP OP_1 OP_ELSE OP_4 OP_PICK OP_1 OP_NUMEQUAL OP_IF OP_3 OP_ROLL OP_CHECKLOCKTIMEVERIFY OP_DROP OP_4 OP_ROLL OP_SWAP OP_CHECKSIG OP_NIP OP_NIP OP_NIP OP_ELSE OP_4 OP_ROLL OP_2 OP_NUMEQUALVERIFY OP_4 OP_ROLL OP_3 OP_ROLL OP_CHECKSIG OP_NIP OP_NIP OP_NIP OP_ENDIF OP_ENDIF",
+  "source": "pragma cashscript ^0.14.0;\n\n// Non-custodial BCH escrow primitive. Fiat movement remains external to this\n// covenant; only BCH release, refund, and arbiter resolution are enforced.\ncontract P2PEscrow(pubkey buyer, pubkey seller, pubkey arbiter, int timeout) {\n    function release(sig sellerSig) {\n        require(checkSig(sellerSig, seller));\n    }\n\n    function refund(sig buyerSig) {\n        require(tx.time >= timeout);\n        require(checkSig(buyerSig, buyer));\n    }\n\n    function dispute(sig arbiterSig) {\n        require(checkSig(arbiterSig, arbiter));\n    }\n}\n",
+  "fingerprint": "a9b3e2a06ad3e0fbe3280e61775d80a06b0c57f205dfea3d68c1a682fbc6c6fd",
+  "debug": {
+    "bytecode": "5479009c63557a7bad6d6d51675479519c63537ab175547a7cac77777767547a529d547a537aac7777776868",
+    "sourceMap": "6:4:8:5;;;;;7:25:7:34;;:36::42;:8::45:1;6:36:8:5;;;:4;10::13::0;;;;;11:27:11:34;;:8::36:1;;12:25:12:33:0;;:35::40;:8::43:1;10:34:13:5;;;:4;15::17::0;;;;16:25:16:35;;:37::44;;:8::47:1;15:37:17:5;;;5:0:18:1;",
+    "logs": [],
+    "requires": [
+      { "ip": 12, "line": 7 },
+      { "ip": 24, "line": 11 },
+      { "ip": 30, "line": 12 },
+      { "ip": 43, "line": 16 }
+    ],
+    "sourceTags": "26:28:sc;39:41:sc"
+  },
+  "compiler": {
+    "name": "cashc",
+    "version": "0.14.0",
+    "options": {
+      "enforceFunctionParameterTypes": true,
+      "enforceLocktimeGuard": true
+    }
+  },
+  "updatedAt": "2026-11-13T05:22:28.859Z"
+}

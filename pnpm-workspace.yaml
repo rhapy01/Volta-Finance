@@ -1,0 +1,11 @@
+packages:
+  - .
+patchedDependencies:
+  '@wizardconnect/core@0.2.10': patches/@wizardconnect__core@0.2.10.patch
+  '@wizardconnect/react@0.2.6': patches/@wizardconnect__react@0.2.6.patch
+  wouter@3.7.1: patches/wouter@3.7.1.patch
+overrides:
+  tailwindcss>nanoid: 3.3.7
+onlyBuiltDependencies:
+  - '@tailwindcss/oxide'
+  - esbuild

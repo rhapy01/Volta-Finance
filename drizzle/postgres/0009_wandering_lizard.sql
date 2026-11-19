@@ -1,0 +1,1 @@
+ALTER TABLE "payroll_items" ADD COLUMN "payout_address" varchar(128);

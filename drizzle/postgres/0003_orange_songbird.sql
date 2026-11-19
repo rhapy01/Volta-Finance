@@ -1,0 +1,1 @@
+ALTER TABLE "payment_intents" ADD COLUMN "recipient_address" varchar(128);

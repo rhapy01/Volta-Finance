@@ -1,0 +1,227 @@
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useLocation } from "wouter";
+import { Activity, ArrowDownLeft, ArrowLeftRight, BriefcaseBusiness, Check, ChevronDown, CircleHelp, FilePlus2, FileText, LayoutDashboard, LogOut, Plus, Settings2, ShieldCheck, Users, WalletCards } from "lucide-react";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { Button } from "@/components/ui/button";
+import { trpc } from "@/lib/trpc";
+import { NotificationBell } from "@/features/notifications/NotificationBell";
+import { InvoiceRows } from "@/features/invoices/InvoiceRows";
+import { InvoiceDetails } from "@/features/invoices/InvoiceDetails";
+import { FinancialRecords } from "@/features/records/FinancialRecords";
+import { PayrollMembers } from "@/features/payroll/PayrollMembers";
+import { PayrollSummaryCard } from "@/features/payroll/PayrollSummaryCard";
+import { ProfileSettings } from "@/features/settings/ProfileSettings";
+import { TreasuryWorkspace } from "@/features/treasury/TreasuryWorkspace";
+import { OrganizationMemberHome } from "@/features/workspace/OrganizationMemberHome";
+import { AddressSummary } from "@/features/settings/AddressSummary";
+import { WorkspaceModal } from "@/features/workspace/WorkspaceModal";
+import { MetricCard } from "@/features/overview/MetricCard";
+import { useVoltaWallet, WalletConnection } from "@/features/wallet/WalletConnection";
+import { deriveWalletAddress } from "@/lib/bch";
+
+const InvoiceInbox = lazy(() => import("@/features/invoices/InvoiceInbox").then((module) => ({ default: module.InvoiceInbox })));
+const PayrollRunExecution = lazy(() => import("@/features/payroll/PayrollRunExecution").then((module) => ({ default: module.PayrollRunExecution })));
+
+type Section = "overview" | "payments" | "payroll" | "treasury" | "records" | "settings";
+const nav: Array<{ id: Section; label: string; icon: typeof LayoutDashboard; path: string }> = [
+  { id: "overview", label: "Overview", icon: LayoutDashboard, path: "/app" },
+  { id: "payments", label: "Invoices & payments", icon: FileText, path: "/payments" },
+  { id: "payroll", label: "Staff Payroll", icon: Users, path: "/payroll" },
+  { id: "treasury", label: "Smart treasury", icon: WalletCards, path: "/treasury" },
+  { id: "records", label: "Financial records", icon: Activity, path: "/records" },
+  { id: "settings", label: "Profile settings", icon: Settings2, path: "/settings" },
+];
+const money = (value?: string | number | null) => value == null || value === "" ? "—" : String(value);
+const compact = (value: string) => value.length > 24 ? `${value.slice(0, 11)}…${value.slice(-8)}` : value;
+const formatUsdtAtomic = (value: string) => { try { const cents = BigInt(value); return `${cents / 100n}.${(cents % 100n).toString().padStart(2, "0")}`; } catch { return "0.00"; } };
+
+function PageTitle({ kicker, title, text, action }: { kicker: string; title: string; text: string; action?: ReactNode }) {
+  return <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-orange-700">{kicker}</p><h1 className="text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">{title}</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{text}</p></div>{action && <div className="shrink-0">{action}</div>}</div>;
+}
+
+function Card({ children, className = "" }: { children: ReactNode; className?: string }) { return <section className={`rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(22,34,52,.035)] sm:p-6 ${className}`}>{children}</section>; }
+
+export default function Home() {
+  const [location, setLocation] = useLocation();
+  const auth = useAuth();
+  const utils = trpc.useUtils();
+  const wallet = useVoltaWallet();
+  const linkedAddresses = useRef(new Set<string>());
+  const workspaceQuery = trpc.organization.current.useQuery(undefined, { enabled: auth.isAuthenticated, retry: false });
+  const workspace = workspaceQuery.data;
+  const isOrg = workspace?.type === "organization";
+  const isOrgOwner = isOrg && workspace?.role === "owner";
+  const isOrgStaff = isOrg && !isOrgOwner;
+  const workspacesQuery = trpc.organization.list.useQuery(undefined, { enabled: auth.isAuthenticated });
+  const invitesQuery = trpc.organization.myPendingInvites.useQuery(undefined, { enabled: auth.isAuthenticated });
+  const workspaceAdminDataEnabled = auth.isAuthenticated && workspaceQuery.isSuccess && (!isOrg || isOrgOwner);
+  const metricsQuery = trpc.finance.workspacePaymentMetrics.useQuery(undefined, { enabled: workspaceAdminDataEnabled });
+  const invoicesQuery = trpc.finance.listInvoices.useQuery(undefined, { enabled: workspaceAdminDataEnabled });
+  const inboxQuery = trpc.finance.incomingInvoices.useQuery(undefined, { enabled: workspaceAdminDataEnabled });
+  const destinationsQuery = trpc.destinations.list.useQuery(undefined, { enabled: auth.isAuthenticated });
+  const stellarQuery = trpc.stellarDestinations.list.useQuery(undefined, { enabled: auth.isAuthenticated });
+  const walletQuery = trpc.wallets.list.useQuery(undefined, { enabled: auth.isAuthenticated });
+  const linkWallet = trpc.wallets.link.useMutation({ onSuccess: () => { void utils.wallets.list.invalidate(); }, onError: (error) => setNotice(error.message) });
+  const payrollQuery = trpc.finance.payrollData.useQuery(undefined, { enabled: auth.isAuthenticated && isOrgOwner, retry: false });
+  const [showCreate, setShowCreate] = useState(false);
+  const [showSend, setShowSend] = useState<string | null>(null);
+  const [viewInvoiceId, setViewInvoiceId] = useState<string | null>(null);
+  const [walletConnectRequest, setWalletConnectRequest] = useState(0);
+  const [recipientType, setRecipientType] = useState<"personal" | "organization">("personal");
+  const [recipientWorkspaceId, setRecipientWorkspaceId] = useState<number | undefined>();
+  const [notice, setNotice] = useState("");
+  const [orgName, setOrgName] = useState("");
+  const [clientName, setClientName] = useState("");
+  const [invoiceAmount, setInvoiceAmount] = useState("");
+  const [invoiceAsset, setInvoiceAsset] = useState<"BCH" | "PUSD" | "MUSD" | "XLM">("BCH");
+  const [destinationId, setDestinationId] = useState("");
+  const [stellarDestinationId, setStellarDestinationId] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [payrollPeriod, setPayrollPeriod] = useState("November 2026");
+  const [organizationInvoiceTab, setOrganizationInvoiceTab] = useState<"sent" | "received">("received");
+  const [payrollSource, setPayrollSource] = useState<"BCH" | "PUSD" | "MUSD">("BCH");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const current = nav.find((item) => item.path === location) ?? nav[0];
+  const visibleNav = nav.filter((item) => isOrgStaff ? item.id === "overview" || item.id === "settings" : (item.id !== "treasury" || !isOrg) && (item.id !== "payroll" || isOrg));
+  const invoices = invoicesQuery.data ?? [];
+  const inbox = inboxQuery.data ?? [];
+  const organizationTrend = useMemo(() => {
+    const now = new Date();
+    const months = Array.from({ length: 6 }, (_, index) => new Date(now.getFullYear(), now.getMonth() - 5 + index, 1));
+    const rows = months.map((month) => ({ key: `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`, month: month.toLocaleDateString(undefined, { month: "short" }), sent: 0, received: 0, payrollRuns: 0 }));
+    const byMonth = new Map(rows.map((row) => [row.key, row]));
+    for (const [items, field] of [[invoices, "sent"], [inbox, "received"]] as const) {
+      const seenInvoices = new Set<string>();
+      for (const invoice of items) {
+        if (seenInvoices.has(invoice.id)) continue;
+        seenInvoices.add(invoice.id);
+        const createdAt = new Date(invoice.createdAt);
+        if (!Number.isFinite(createdAt.getTime())) continue;
+        const key = `${createdAt.getFullYear()}-${String(createdAt.getMonth() + 1).padStart(2, "0")}`;
+        const row = byMonth.get(key);
+        if (row) row[field] += 1;
+      }
+    }
+    for (const run of payrollQuery.data?.runs ?? []) {
+      const createdAt = new Date(run.createdAt);
+      if (!Number.isFinite(createdAt.getTime())) continue;
+      const key = `${createdAt.getFullYear()}-${String(createdAt.getMonth() + 1).padStart(2, "0")}`;
+      const row = byMonth.get(key);
+      if (row) row.payrollRuns += 1;
+    }
+    return rows;
+  }, [invoices, inbox, payrollQuery.data?.runs]);
+  const organizationTrendMax = Math.max(1, ...organizationTrend.flatMap((row) => [row.sent, row.received, row.payrollRuns]));
+  const activePayrollMembers = payrollQuery.data?.employees.filter((employee) => employee.active) ?? [];
+  const hasStellarPayrollMember = activePayrollMembers.some((employee) => employee.preferredAsset === "XLM" || employee.preferredAsset === "USDC");
+  useEffect(() => { if (hasStellarPayrollMember && payrollSource === "BCH") setPayrollSource("PUSD"); }, [hasStellarPayrollMember, payrollSource]);
+  const monthlyPayrollBudget = activePayrollMembers.reduce((sum, employee) => sum + (Number(employee.monthlyDisplayAmount) || 0), 0);
+  const unpaidLatestPayouts = payrollQuery.data?.latestItems.filter((item) => item.status !== "verified").length ?? 0;
+  const viewedInvoice = viewInvoiceId ? [...invoices, ...inbox].find((invoice) => invoice.id === viewInvoiceId) : undefined;
+  const drafts = invoices.filter((invoice) => invoice.status === "Draft");
+  const openItems = invoices.filter((invoice) => ["Draft", "Awaiting payment", "Awaiting verification", "Needs review"].includes(invoice.status));
+  const activeInvites = invitesQuery.data ?? [];
+  const normalizedRecipientEmail = recipientEmail.trim().toLowerCase();
+  const recipientTargets = trpc.finance.invoiceRecipientTargets.useQuery({ email: normalizedRecipientEmail }, { enabled: Boolean(showSend && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedRecipientEmail)), retry: false });
+  const recipientOrganizations = recipientTargets.data?.organizations ?? [];
+  useEffect(() => {
+    setRecipientWorkspaceId(recipientType === "organization" && recipientOrganizations.length === 1 ? recipientOrganizations[0].id : undefined);
+  }, [recipientType, normalizedRecipientEmail, recipientOrganizations]);
+  useEffect(() => {
+    if (!auth.isAuthenticated || wallet.state !== "connected" || !wallet.manager) return;
+    const address = deriveWalletAddress(wallet.manager, "receive", 0n, "chipnet");
+    if (!address || linkedAddresses.current.has(address)) return;
+    linkedAddresses.current.add(address);
+    linkWallet.mutate({ provider: wallet.walletName || "WizardConnect", network: "chipnet", address });
+  }, [auth.isAuthenticated, wallet.state, wallet.manager, wallet.walletName]);
+  useEffect(() => { if (!auth.loading && !auth.isAuthenticated) setLocation("/login"); }, [auth.loading, auth.isAuthenticated, setLocation]);
+  useEffect(() => { if ((isOrgStaff && current.id !== "overview" && current.id !== "settings") || (!isOrg && current.id === "payroll")) setLocation("/app"); }, [isOrg, isOrgStaff, current.id, setLocation]);
+
+  const refresh = async () => { await Promise.all([utils.organization.invalidate(), utils.finance.invalidate(), utils.destinations.invalidate(), utils.stellarDestinations.invalidate(), utils.wallets.invalidate()]); };
+  const createOrganization = trpc.organization.create.useMutation({ onSuccess: async () => { setShowCreate(false); setOrgName(""); await refresh(); setNotice("Organization workspace created."); }, onError: (e) => setNotice(e.message) });
+  const switchWorkspace = trpc.organization.switch.useMutation({ onSuccess: async () => { await refresh(); setLocation("/app"); }, onError: (e) => setNotice(e.message) });
+  const createInvoice = trpc.finance.createInvoice.useMutation({ onSuccess: async (invoice) => { await refresh(); setShowCreate(false); setShowSend(invoice.id); setNotice("Draft saved. Add the recipient email to send it."); }, onError: (e) => setNotice(e.message) });
+  const sendInvoice = trpc.finance.sendInvoice.useMutation({ onSuccess: async () => { await refresh(); setShowSend(null); setRecipientEmail(""); setNotice("Invoice sent to the recipient’s Volta Finance inbox."); }, onError: (e) => setNotice(e.message) });
+  const reviewInvoice = trpc.finance.reviewIncomingInvoice.useMutation({ onSuccess: async () => { await refresh(); setNotice("Invoice decision saved."); }, onError: (e) => setNotice(e.message) });
+  const acceptInvite = trpc.organization.acceptPendingInvite.useMutation({ onSuccess: async () => { await refresh(); setNotice("You joined the organization."); }, onError: (e) => setNotice(e.message) });
+  const createRun = trpc.finance.createPayrollRun.useMutation({ onSuccess: async () => { await refresh(); setNotice("Payroll run prepared for review."); }, onError: (e) => setNotice(e.message) });
+  const addDestination = trpc.destinations.add.useMutation({ onSuccess: async () => { await refresh(); setNotice("Receiving address saved."); }, onError: (e) => setNotice(e.message) });
+  const addStellarDestination = trpc.stellarDestinations.add.useMutation({ onSuccess: async () => { await refresh(); setNotice("Stellar Testnet address saved and selected as the payroll destination."); }, onError: (e) => setNotice(e.message) });
+  const setDefaultStellar = trpc.stellarDestinations.makeDefault.useMutation({ onSuccess: async () => { await refresh(); setNotice("Stellar Testnet address selected for payroll."); }, onError: (e) => setNotice(e.message) });
+  const createInvite = trpc.organization.createInvite.useMutation({ onSuccess: async () => { setInviteEmail(""); await refresh(); setNotice("Invitation sent. It will appear in the invited person’s personal workspace."); }, onError: (e) => setNotice(e.message) });
+  const logout = async () => { await auth.logout(); setLocation("/login"); };
+
+  const submitInvoice = (event: FormEvent) => {
+    event.preventDefault();
+    createInvoice.mutate({ clientName, amount: invoiceAmount, requestAsset: "USDT", asset: invoiceAsset, dueDate, ...(invoiceAsset === "XLM" ? { stellarDestinationId: Number(stellarDestinationId) || undefined } : { destinationId: Number(destinationId) || undefined }) });
+  };
+  const makePayrollRun = (event: FormEvent) => {
+    event.preventDefault();
+    const employees = (payrollQuery.data?.employees ?? []).filter((employee) => employee.active && employee.monthlyDisplayAmount && employee.walletAddress);
+    if (!employees.length) { setNotice("Add active payroll members with a saved personal receiving address first."); return; }
+    createRun.mutate({ period: payrollPeriod, sourceAsset: payrollSource, items: employees.map((employee) => ({ employeeId: employee.id, amount: String(employee.monthlyDisplayAmount) })) });
+  };
+
+  if (auth.loading || (auth.isAuthenticated && workspaceQuery.isLoading)) return <main className="grid min-h-screen place-items-center bg-[#f7f7f4] text-slate-600">Loading your workspace…</main>;
+  if (!auth.isAuthenticated) return null;
+
+  const titleBySection: Record<Section, { kicker: string; title: string; text: string }> = {
+    overview: { kicker: "Workspace overview", title: `Good ${new Date().getHours() < 12 ? "morning" : "afternoon"}, ${auth.user?.name?.split(" ")[0] || "there"}.`, text: "Invoices, team payouts, and your financial activity in one clear workspace." },
+    payments: { kicker: "Invoices & receipts", title: "Payments, clearly tracked.", text: "Create an invoice draft, send it to a registered account, review received invoices, and keep receipts attached to the record." },
+    payroll: { kicker: "Organization workspace", title: "Staff Payroll", text: "Manage staff payroll from the organization. Payout destinations and preferred assets come from each member’s personal profile." },
+    treasury: { kicker: "Personal workspace", title: "Smart treasury", text: "Treasury actions belong to your personal workspace. Organization funds are managed through invoices and payroll." },
+    records: { kicker: "Financial records", title: "A single record of what moved.", text: "Review saved invoices and verified payments across this workspace." },
+    settings: { kicker: "Your profile", title: "Payment destinations", text: "Save the receiving addresses you use. Invoices and organization payroll reuse these verified preferences." },
+  };
+  const heading = isOrgStaff && current.id === "overview" ? { kicker: workspace?.name || "Organization", title: "Your pay", text: "Your payroll details, saved payout destination, and payments from this organization." } : isOrgOwner && current.id === "overview" ? { kicker: workspace?.name || "Organization", title: "Organization overview", text: "A working view of your team, invoices, and payroll." } : titleBySection[current.id];
+
+  return <div className="min-h-screen bg-[#f7f7f4] text-slate-900">
+    <aside className="fixed inset-y-0 left-0 z-20 hidden w-[250px] flex-col border-r border-slate-200 bg-white px-4 py-5 lg:flex">
+      <button className="mb-8 flex items-center gap-3 px-2 text-left" onClick={() => setLocation("/app")}><span className="grid h-10 w-10 place-items-center rounded-xl bg-orange-100 text-orange-700"><ArrowLeftRight size={21} /></span><span><b className="block text-lg leading-5">Volta Finance</b><small className="text-slate-500">Money in motion</small></span></button>
+      <div className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[.16em] text-slate-400">Workspace</div>
+      <div className="mb-5 space-y-1">{visibleNav.map((item) => <button key={item.id} onClick={() => setLocation(item.path)} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium transition ${current.id === item.id ? "bg-orange-50 text-orange-800" : "text-slate-600 hover:bg-slate-50"}`}><item.icon size={18} />{isOrgStaff && item.id === "overview" ? "Your pay" : item.label}</button>)}</div>
+      <div className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[.16em] text-slate-400">Switch account</div>
+      <div className="space-y-1">{(workspacesQuery.data ?? []).map((item) => <button key={item.id} onClick={() => switchWorkspace.mutate({ workspaceId: item.id })} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-xs ${item.id === workspace?.id ? "bg-slate-100 font-semibold text-slate-900" : "text-slate-500 hover:bg-slate-50"}`}><BriefcaseBusiness size={15} /><span className="truncate">{item.name}</span><span className="ml-auto text-[10px]">{item.type === "organization" ? "ORG" : "YOU"}</span></button>)}</div>
+      {!isOrg && <button onClick={() => setShowCreate(true)} className="mt-2 flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold text-orange-700 hover:bg-orange-50"><Plus size={15} /> Create organization</button>}
+      <button onClick={logout} className="mt-3 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-slate-500 hover:bg-slate-100"><LogOut size={17} />Sign out</button>
+    </aside>
+    <main className="min-h-screen lg:pl-[250px]">
+      <header className="sticky top-0 z-10 flex h-[68px] items-center justify-between border-b border-slate-200/80 bg-[#f7f7f4]/90 px-4 backdrop-blur sm:px-8"><div className="flex min-w-0 items-center gap-2 lg:hidden"><span className="grid h-9 w-9 place-items-center rounded-xl bg-orange-100 text-orange-700"><ArrowLeftRight size={18} /></span><b>Volta Finance</b></div><div className="hidden items-center gap-2 text-sm text-slate-500 lg:flex"><span>{workspace?.name || "Personal account"}</span><ChevronDown size={15} /></div><div className="flex items-center gap-3"><span className="hidden text-sm text-slate-500 sm:block">{auth.user?.email}</span><WalletConnection wallet={wallet} request={walletConnectRequest} /><NotificationBell /><div className="grid h-9 w-9 place-items-center rounded-full bg-slate-900 text-sm font-bold text-white">{auth.user?.name?.slice(0, 1) || "V"}</div></div></header>
+      <div className="mx-auto max-w-[1440px] space-y-7 p-4 sm:p-8 xl:p-10">
+        <PageTitle {...heading} action={!isOrgStaff && current.id !== "settings" && current.id !== "payroll" && current.id !== "treasury" ? <Button onClick={() => { setShowCreate(true); setNotice(""); }} className="gap-2 rounded-xl bg-orange-600 px-5 text-white hover:bg-orange-700"><FilePlus2 size={17} />Create invoice</Button> : undefined} />
+        <nav className="-mx-4 flex gap-1 overflow-x-auto border-b border-slate-200 px-4 pb-2 lg:hidden">{visibleNav.map((item) => <button key={item.id} onClick={() => setLocation(item.path)} className={`shrink-0 rounded-lg px-3 py-2 text-xs font-semibold ${current.id === item.id ? "bg-orange-100 text-orange-800" : "text-slate-500"}`}>{isOrgStaff && item.id === "overview" ? "Your pay" : item.label}</button>)}</nav>
+        {notice && <div className="flex items-start justify-between gap-3 rounded-xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-950"><span>{notice}</span><button onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}
+
+        {current.id === "overview" && isOrgStaff && <OrganizationMemberHome workspaceName={workspace?.name || "Organization"} onOpenSettings={() => setLocation("/settings")} />}
+
+        {current.id === "overview" && isOrgOwner && <>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><MetricCard title="Open invoices" value={money(metricsQuery.data?.openInvoices)} detail="Waiting for review or payment" icon={FileText} /><MetricCard title="Collections this month" value={metricsQuery.data?.receivedThisMonthUsdt == null ? "—" : `$${metricsQuery.data.receivedThisMonthUsdt} USDT`} detail={`${money(metricsQuery.data?.paidInvoicesThisMonth)} paid invoices · requested in USDT`} icon={ArrowDownLeft} /><MetricCard title="Organization members" value={money(payrollQuery.data?.members.length)} detail="People in this workspace" icon={Users} /><MetricCard title="Monthly payroll plan" value={`${monthlyPayrollBudget.toFixed(2)} USDT`} detail={`${activePayrollMembers.length} active staff member${activePayrollMembers.length === 1 ? "" : "s"}`} icon={Users} /></div>
+          <div className="grid gap-5 xl:grid-cols-[1.5fr_1fr]"><Card className="overflow-hidden border-slate-200 bg-gradient-to-br from-white via-white to-orange-50/60"><div className="mb-4 flex flex-wrap items-start justify-between gap-3"><div><p className="text-[11px] font-bold uppercase tracking-[.16em] text-orange-700">Organization pulse</p><h2 className="mt-1 text-lg font-bold">Activity over six months</h2><p className="mt-1 text-sm text-slate-500">Compare invoices sent, invoices received, and payroll runs prepared.</p></div><div className="flex gap-2"><span className="rounded-xl bg-orange-50 px-3 py-2 text-xs font-semibold text-orange-800">{invoices.length} sent</span><span className="rounded-xl bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-800">{inbox.length} received</span><span className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700">{payrollQuery.data?.runs.length ?? 0} payroll runs</span></div></div>{organizationTrend.some((row) => row.sent || row.received || row.payrollRuns) ? <div className="h-[250px] w-full"><svg className="h-full w-full" viewBox="0 0 720 250" role="img" aria-label="Monthly sent invoices, received invoices, and payroll runs for the last six months"><line x1="58" y1="42" x2="700" y2="42" stroke="#e8edf3" strokeDasharray="4 5" /><line x1="58" y1="112" x2="700" y2="112" stroke="#e8edf3" strokeDasharray="4 5" /><line x1="58" y1="182" x2="700" y2="182" stroke="#cbd5e1" /><text x="30" y="46" fill="#94a3b8" fontSize="11">{organizationTrendMax}</text><text x="30" y="116" fill="#94a3b8" fontSize="11">{Math.ceil(organizationTrendMax / 2)}</text><text x="38" y="186" fill="#94a3b8" fontSize="11">0</text>{organizationTrend.map((row, index) => { const center = 105 + index * 106; const sentHeight = row.sent / organizationTrendMax * 132; const receivedHeight = row.received / organizationTrendMax * 132; const payrollHeight = row.payrollRuns / organizationTrendMax * 132; return <g key={row.key}><title>{row.month}: {row.sent} sent, {row.received} received, {row.payrollRuns} payroll runs</title><rect x={center - 33} y={182 - sentHeight} width="18" height={sentHeight} rx="5" fill="#f97316" /><rect x={center - 9} y={182 - receivedHeight} width="18" height={receivedHeight} rx="5" fill="#8b5cf6" /><rect x={center + 15} y={182 - payrollHeight} width="18" height={payrollHeight} rx="5" fill="#172033" /><text x={center} y="215" textAnchor="middle" fill="#64748b" fontSize="12">{row.month}</text></g>; })}</svg><div className="mt-1 flex flex-wrap justify-center gap-x-5 gap-y-2 text-xs text-slate-500"><span className="inline-flex items-center gap-2"><i className="h-2.5 w-2.5 rounded-sm bg-orange-500" />Sent</span><span className="inline-flex items-center gap-2"><i className="h-2.5 w-2.5 rounded-sm bg-violet-500" />Received</span><span className="inline-flex items-center gap-2"><i className="h-2.5 w-2.5 rounded-sm bg-slate-900" />Payroll runs</span></div></div> : <div className="grid h-[250px] place-items-center rounded-2xl border border-dashed border-slate-200 bg-white/70 text-center"><div><p className="text-sm font-semibold text-slate-800">No activity to chart yet</p><p className="mt-1 text-xs text-slate-500">Invoice and payroll activity will appear here.</p></div></div>}</Card><Card className="relative overflow-hidden bg-gradient-to-br from-white via-white to-orange-50/60 text-slate-900"><div className="pointer-events-none absolute -right-8 -top-12 h-40 w-40 rounded-full bg-orange-400/10 blur-3xl" /><div className="relative"><p className="text-[11px] font-bold uppercase tracking-[.16em] text-orange-800">Team readiness</p><h2 className="mt-1 text-lg font-bold text-slate-950">Payroll setup</h2><p className="mt-1 text-sm text-slate-700">Staff are ready when their USDT amount and personal payout address are saved.</p><div className="mt-6 flex items-end justify-between gap-4"><div><p className="text-3xl font-bold text-slate-950">{activePayrollMembers.filter((employee) => employee.monthlyDisplayAmount && employee.walletAddress).length}<span className="ml-1 text-base font-medium text-slate-600">/ {activePayrollMembers.length}</span></p><p className="mt-1 text-xs text-slate-600">active staff ready</p></div><div className="text-right"><p className="text-2xl font-bold text-slate-950">{activePayrollMembers.filter((employee) => !employee.monthlyDisplayAmount || !employee.walletAddress).length}</p><p className="mt-1 text-xs text-slate-600">need setup</p></div></div><div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-gradient-to-r from-orange-400 to-amber-300" style={{ width: `${activePayrollMembers.length ? Math.round(activePayrollMembers.filter((employee) => employee.monthlyDisplayAmount && employee.walletAddress).length / activePayrollMembers.length * 100) : 0}%` }} /></div><Button onClick={() => setLocation("/payroll")} className="mt-5 rounded-xl border border-slate-200 bg-white text-slate-950 hover:bg-orange-50">Manage payroll</Button></div></Card></div>
+        </>}
+
+        {current.id === "overview" && !isOrgStaff && !isOrgOwner && <>
+          {activeInvites.length > 0 && <Card className="border-orange-200 bg-orange-50/70"><h2 className="font-bold">Organization invitations</h2><p className="mt-1 text-sm text-slate-600">Join an organization from your personal account. You keep both workspaces.</p><div className="mt-4 space-y-2">{activeInvites.map((invite) => <div key={invite.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-white p-3"><span><b>{invite.workspaceName}</b><small className="ml-2 text-slate-500">invited you as {invite.role}</small></span><Button size="sm" onClick={() => acceptInvite.mutate({ inviteId: invite.id })} disabled={acceptInvite.isPending}>Accept invitation</Button></div>)}</div></Card>}
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><MetricCard title="Open invoices" value={money(metricsQuery.data?.openInvoices)} detail="Sent, received, and drafts awaiting payment" icon={FileText} /><MetricCard title="Invoice value received" value={metricsQuery.data?.receivedThisMonthUsdt == null ? "—" : `$${metricsQuery.data.receivedThisMonthUsdt} USDT`} detail={`${money(metricsQuery.data?.paidInvoicesThisMonth)} paid invoice${metricsQuery.data?.paidInvoicesThisMonth === 1 ? "" : "s"} this month · USDT requests`} icon={ArrowDownLeft} /><MetricCard title="Payments in progress" value={money(metricsQuery.data?.activeRoutes)} detail="Awaiting wallet signature or confirmation" icon={ArrowLeftRight} /><MetricCard title="Wallet connection" value={wallet.state === "connected" ? "Connected" : "Optional"} detail={wallet.state === "connected" ? wallet.walletName || "WizardConnect compatible wallet" : "Connect only when signing"} icon={WalletCards} />
+          </div>
+          <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr]"><Card><div className="mb-5 flex items-center justify-between"><div><h2 className="text-lg font-bold">Recent invoices</h2><p className="mt-1 text-sm text-slate-500">Your latest requests and their current state.</p></div><button onClick={() => setLocation("/payments")} className="text-sm font-semibold text-orange-700">View all →</button></div><InvoiceRows invoices={invoices.slice(0, 5)} empty="No invoices yet. Create a draft to get started." onView={setViewInvoiceId} onSend={(id) => setShowSend(id)} /></Card><Card><div className="mb-4 flex items-center gap-2"><div className="grid h-9 w-9 place-items-center rounded-xl bg-emerald-50 text-emerald-700"><ShieldCheck size={18} /></div><h2 className="text-lg font-bold">Receiving addresses</h2></div><p className="mb-4 text-sm leading-6 text-slate-600">Saved in your personal profile and reused for invoices and organization payroll.</p><AddressSummary destinations={destinationsQuery.data ?? []} stellar={stellarQuery.data ?? []} /><button onClick={() => setLocation("/settings")} className="mt-4 text-sm font-semibold text-orange-700">Manage destinations →</button></Card></div>
+          <Card><div className="mb-4 flex items-center justify-between"><div><h2 className="text-lg font-bold">Invoices sent to you</h2><p className="mt-1 text-sm text-slate-500">Open an invoice to review it, then accept or decline.</p></div><button onClick={() => setLocation("/payments")} className="text-sm font-semibold text-orange-700">See inbox →</button></div><InvoiceRows invoices={inbox.slice(0, 4)} empty="Your invoice inbox is clear." onView={setViewInvoiceId} /></Card>
+        </>}
+
+        {current.id === "payments" && <div className="grid gap-5 xl:grid-cols-[1.35fr_1fr]"><div className="space-y-5"><Suspense fallback={<Card>Loading invoice payments…</Card>}><InvoiceInbox invoices={inbox} settledInvoices={invoices.filter((invoice) => invoice.status === "Paid").map((invoice) => ({ id: invoice.id, client: invoice.client, amount: invoice.amount, amountAtomic: invoice.amountAtomic, receivedAmountAtomic: invoice.receivedAmountAtomic, requestAsset: invoice.requestAsset, asset: invoice.asset, deliveryAsset: invoice.deliveryAsset, status: invoice.status, network: invoice.network, receivingAddress: invoice.receivingAddress, paymentTxid: invoice.paymentTxid }))} wallet={wallet} onConnect={() => setWalletConnectRequest((current) => current + 1)} onView={setViewInvoiceId} /></Suspense><Card><h2 className="mb-1 text-lg font-bold">Sent invoices</h2><p className="mb-4 text-sm text-slate-500">Open invoices you created. Paid invoices and receipts are grouped under Settled invoices.</p><InvoiceRows invoices={invoices.filter((invoice) => invoice.status !== "Paid" && invoice.status !== "Draft")} empty="No active sent invoices." onView={setViewInvoiceId} onSend={(id) => setShowSend(id)} /></Card></div><div className="space-y-5"><Card className="border-orange-200 bg-gradient-to-br from-orange-50 to-white"><div className="mb-3 grid h-10 w-10 place-items-center rounded-xl bg-orange-100 text-orange-800"><FilePlus2 size={20} /></div><h2 className="text-xl font-bold text-slate-950">Create an invoice</h2><p className="my-2 text-sm leading-6 text-slate-700">Save a draft, review it, then send it to a registered personal account or organization owner.</p><Button onClick={() => setShowCreate(true)} className="mt-2 gap-2 bg-orange-700 text-white hover:bg-orange-800"><Plus size={17} />Create invoice draft</Button></Card><Card><h2 className="font-bold">Drafts ready to send</h2><p className="mt-1 text-sm text-slate-600">Recipient email is entered after the draft is saved.</p><div className="mt-4"><InvoiceRows invoices={drafts} empty="No saved drafts." onView={setViewInvoiceId} onSend={(id) => setShowSend(id)} /></div></Card></div></div>}
+
+        {current.id === "records" && <FinancialRecords isOrganization={isOrg} />}
+
+        {current.id === "payroll" && <>{!isOrg ? <Card className="max-w-2xl"><div className="mb-3 grid h-11 w-11 place-items-center rounded-xl bg-orange-50 text-orange-700"><BriefcaseBusiness /></div><h2 className="text-xl font-bold">Payroll is for organizations</h2><p className="mt-2 text-sm leading-6 text-slate-600">Your personal workspace stays independent. Create or switch to an organization to invite staff and manage payroll.</p><Button onClick={() => setShowCreate(true)} className="mt-5 gap-2 bg-orange-600 text-white"><Plus size={16} />Create organization</Button></Card> : <div className="space-y-5 [&_*]:!rounded-none"><PayrollSummaryCard memberCount={payrollQuery.data?.members.length ?? 0} activeCount={activePayrollMembers.length} monthlyBudget={monthlyPayrollBudget} onInvite={() => document.getElementById("payroll-invite-email")?.focus()} /><Card><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[.16em] text-orange-700">Grow your team</p><h2 className="mt-1 text-lg font-bold">Invite staff</h2><p className="mt-1 text-sm text-slate-500">Invite staff here. They accept from their personal workspace dashboard.</p></div></div><form className="mt-4 flex flex-col gap-3 sm:flex-row" onSubmit={(event) => { event.preventDefault(); createInvite.mutate({ email: inviteEmail, role: "employee" }); }}><input required type="email" id="payroll-invite-email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} placeholder="staff@example.com" className="min-w-0 flex-1 rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-orange-400" /><Button disabled={createInvite.isPending} className="gap-2 bg-slate-900 text-white"><Plus size={16} />Invite staff</Button></form></Card><PayrollMembers members={payrollQuery.data?.members ?? []} /><Card><h2 className="text-lg font-bold">Prepare a payroll run</h2><p className="mt-1 text-sm text-slate-500">Uses each active staff member’s saved payout asset and matching personal address.</p><form className="mt-5 grid gap-3 sm:grid-cols-3" onSubmit={makePayrollRun}><label className="text-xs font-semibold text-slate-600">Pay period<input required value={payrollPeriod} onChange={(event) => setPayrollPeriod(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-3 text-sm font-normal text-slate-900" /></label><label className="text-xs font-semibold text-slate-600">Pay with<select value={payrollSource} onChange={(event) => setPayrollSource(event.target.value as typeof payrollSource)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-normal text-slate-900"><option>BCH</option><option>PUSD</option><option>MUSD</option></select>{hasStellarPayrollMember && <span className="mt-1 block text-[11px] font-normal text-slate-600">PUSD funds Stellar payroll; recipients receive the selected XLM or USDC asset on Stellar Testnet.</span>}</label><div className="flex items-end"><Button disabled={createRun.isPending} className="w-full bg-orange-600 text-white">{createRun.isPending ? "Preparing…" : "Start payrun"}</Button></div></form><div className="mt-5 grid gap-2 sm:grid-cols-2">{(payrollQuery.data?.employees ?? []).filter((employee) => employee.active).map((employee) => <div key={employee.id} className="flex items-center justify-between rounded-xl bg-slate-50 p-3 text-sm"><span>{employee.fullName}</span><span className="font-semibold">{employee.monthlyDisplayAmount ?? "—"} USDT <small className="font-normal text-slate-500">→ {employee.preferredAsset}</small></span></div>)}</div><p className="mt-3 text-xs text-slate-500">Payroll runs use the saved USDT-denominated amount.</p></Card><Suspense fallback={<Card>Loading payroll payment tools…</Card>}><PayrollRunExecution run={payrollQuery.data?.runs?.[0]} items={(payrollQuery.data?.latestItems ?? []) as never[]} employees={(payrollQuery.data?.employees ?? []) as never[]} wallet={wallet} onConnect={() => setWalletConnectRequest((current) => current + 1)} /></Suspense><Card><h2 className="text-lg font-bold">Recent payroll runs</h2><div className="mt-3 divide-y divide-slate-100">{(payrollQuery.data?.runs ?? []).map((run) => <div key={run.id} className="flex flex-wrap justify-between gap-2 py-3 text-sm"><b>{run.period}</b><span className="text-slate-500">{run.status} · {run.sourceAsset}</span></div>)}</div>{!payrollQuery.data?.runs.length && <p className="text-sm text-slate-500">No payroll runs yet.</p>}</Card></div>}</>}
+
+        {current.id === "treasury" && <TreasuryWorkspace isOrganization={isOrg} onSwitchPersonal={() => { const personal = (workspacesQuery.data ?? []).find((item) => item.type === "personal"); if (personal) switchWorkspace.mutate({ workspaceId: personal.id }); }} />}
+
+        {current.id === "settings" && <ProfileSettings destinations={destinationsQuery.data ?? []} stellarDestinations={stellarQuery.data ?? []} name={auth.user?.name ?? ""} email={auth.user?.email ?? ""} isOrganization={isOrg} organizationName={workspace?.name} addDestinationPending={addDestination.isPending} addStellarPending={addStellarDestination.isPending} onAddDestination={(input) => addDestination.mutateAsync(input)} onAddStellarDestination={(input) => addStellarDestination.mutateAsync(input)} onSetDefaultStellarDestination={(destinationId) => setDefaultStellar.mutateAsync({ destinationId })} />}
+      </div>
+    </main>
+
+    {showCreate && <WorkspaceModal title="Create invoice draft" onClose={() => setShowCreate(false)}><p className="mb-5 text-sm leading-6 text-slate-600">The amount is entered in USDT. Choose what the recipient will receive and its saved payment address.</p><form className="grid gap-4 sm:grid-cols-2" onSubmit={submitInvoice}><label className="text-xs font-semibold text-slate-600 sm:col-span-2">Invoice description<input required value={clientName} onChange={(event) => setClientName(event.target.value)} placeholder="e.g. Design services" className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-3 text-sm font-normal" /></label><label className="text-xs font-semibold text-slate-600">Requested amount<input required inputMode="decimal" value={invoiceAmount} onChange={(event) => setInvoiceAmount(event.target.value)} placeholder="0.00 USDT" className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-3 text-sm font-normal" /></label><label className="text-xs font-semibold text-slate-600">Will receive<select value={invoiceAsset} onChange={(event) => { setInvoiceAsset(event.target.value as typeof invoiceAsset); setDestinationId(""); setStellarDestinationId(""); }} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-normal"><option>BCH</option><option>PUSD</option><option>MUSD</option><option>XLM</option></select></label>{invoiceAsset === "XLM" ? <label className="text-xs font-semibold text-slate-600 sm:col-span-2">Saved Stellar address<select required value={stellarDestinationId} onChange={(event) => setStellarDestinationId(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-normal"><option value="">Choose a Stellar address</option>{(stellarQuery.data ?? []).map((item) => <option key={item.id} value={item.id}>{item.label} · {compact(item.address)}</option>)}</select></label> : <label className="text-xs font-semibold text-slate-600 sm:col-span-2">Saved {invoiceAsset === "BCH" ? "BCH" : "CashTokens"} address<select required value={destinationId} onChange={(event) => setDestinationId(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-3 text-sm font-normal"><option value="">Choose a Chipnet address</option>{(destinationsQuery.data ?? []).filter((item) => item.network === "chipnet" && (invoiceAsset === "BCH" ? item.asset === "BCH" : item.asset === "TOKEN")).map((item) => <option key={item.id} value={item.id}>{item.label} · {compact(item.address)}</option>)}</select></label>}<label className="text-xs font-semibold text-slate-600 sm:col-span-2">Due date<input required value={dueDate} onChange={(event) => setDueDate(event.target.value)} placeholder="e.g. 30 Nov 2026" className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-3 text-sm font-normal" /></label>{createInvoice.error && <p className="text-sm text-red-700 sm:col-span-2">{createInvoice.error.message}</p>}<div className="flex justify-end gap-2 pt-2 sm:col-span-2"><Button type="button" variant="outline" onClick={() => setShowCreate(false)}>Cancel</Button><Button disabled={createInvoice.isPending} className="gap-2 bg-orange-600 text-white">{createInvoice.isPending ? "Saving…" : "Save draft"}<Check size={16} /></Button></div></form></WorkspaceModal>}
+    {showSend && <WorkspaceModal title="Send invoice" onClose={() => setShowSend(null)}><p className="mb-4 text-sm leading-6 text-slate-600">Choose the registered recipient after saving the invoice draft.</p><form className="space-y-4" onSubmit={(event) => { event.preventDefault(); sendInvoice.mutate({ publicId: showSend, recipientEmail: normalizedRecipientEmail, recipientType, recipientWorkspaceId }); }}><label className="block text-xs font-semibold text-slate-600">Recipient account email<input required type="email" value={recipientEmail} onChange={(event) => { setRecipientEmail(event.target.value); setRecipientType("personal"); }} placeholder="person@example.com" className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-3 text-sm font-normal" /></label>{recipientTargets.isLoading && <p className="text-xs text-slate-500">Checking registered account…</p>}{recipientTargets.data?.registered && <><label className="block text-xs font-semibold text-slate-600">Send to<select value={recipientType} onChange={(event) => setRecipientType(event.target.value as typeof recipientType)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-normal"><option value="personal">Personal account</option>{recipientOrganizations.length > 0 && <option value="organization">Organization</option>}</select></label>{recipientType === "organization" && <label className="block text-xs font-semibold text-slate-600">Organization<select required value={recipientWorkspaceId ?? ""} onChange={(event) => setRecipientWorkspaceId(Number(event.target.value) || undefined)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-normal"><option value="">Choose an organization</option>{recipientOrganizations.map((org) => <option key={org.id} value={org.id}>{org.name}</option>)}</select></label>}</>}{recipientTargets.data && !recipientTargets.data.registered && <p className="text-sm text-red-700">This email is not registered. In-platform invoices can only be delivered to registered recipients.</p>}<p className="text-xs leading-5 text-slate-500">Organization delivery is available only for the owner’s email. Staff emails route to their personal inbox.</p>{sendInvoice.error && <p className="text-sm text-red-700">{sendInvoice.error.message}</p>}<div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setShowSend(null)}>Cancel</Button><Button disabled={sendInvoice.isPending || !recipientTargets.data?.registered || (recipientType === "organization" && !recipientWorkspaceId)} className="bg-orange-600 text-white">{sendInvoice.isPending ? "Sending…" : "Send invoice"}</Button></div></form></WorkspaceModal>}
+    {viewedInvoice && <InvoiceDetails invoice={viewedInvoice} onClose={() => setViewInvoiceId(null)} />}
+  </div>;
+}

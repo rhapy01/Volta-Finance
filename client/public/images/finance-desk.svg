@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1000" fill="none">
+  <defs>
+    <linearGradient id="wall" x1="114" y1="86" x2="1120" y2="946" gradientUnits="userSpaceOnUse"><stop stop-color="#E9E8D8"/><stop offset=".52" stop-color="#C6D2BD"/><stop offset="1" stop-color="#9CAC91"/></linearGradient>
+    <linearGradient id="glass" x1="250" y1="170" x2="890" y2="633" gradientUnits="userSpaceOnUse"><stop stop-color="#F7F2E6"/><stop offset="1" stop-color="#BDCAB8"/></linearGradient>
+    <linearGradient id="coat" x1="378" y1="445" x2="663" y2="900" gradientUnits="userSpaceOnUse"><stop stop-color="#C87752"/><stop offset="1" stop-color="#9E573F"/></linearGradient>
+    <linearGradient id="wood" x1="127" y1="735" x2="1108" y2="994" gradientUnits="userSpaceOnUse"><stop stop-color="#CDA477"/><stop offset="1" stop-color="#A87550"/></linearGradient>
+    <linearGradient id="screen" x1="699" y1="601" x2="1051" y2="807" gradientUnits="userSpaceOnUse"><stop stop-color="#234E3B"/><stop offset="1" stop-color="#12382B"/></linearGradient>
+    <filter id="shadow" x="120" y="210" width="1030" height="796" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse"><feGaussianBlur stdDeviation="18"/></filter>
+  </defs>
+  <path fill="url(#wall)" d="M0 0h1200v1000H0z"/>
+  <circle cx="994" cy="180" r="214" fill="#E8D5B9" fill-opacity=".58"/>
+  <path d="M0 0h224v1000H0z" fill="#F4F0E5" fill-opacity=".52"/>
+  <rect x="177" y="113" width="685" height="492" rx="18" fill="#4E6854" fill-opacity=".22"/>
+  <rect x="195" y="130" width="648" height="457" rx="10" fill="url(#glass)"/>
+  <path d="M517 131v456M196 357h646" stroke="#879783" stroke-width="14" stroke-opacity=".72"/>
+  <path d="M207 493c72-80 122-119 202-106 90 15 124 117 208 105 74-10 109-96 226-86v181H207V493Z" fill="#A6B89F" fill-opacity=".68"/>
+  <path d="M207 520c74-58 137-54 215-13 78 41 126 8 195-30 77-43 134-31 226 17v92H207v-66Z" fill="#829982" fill-opacity=".74"/>
+  <path d="M729 277h91v310h-91z" fill="#D8DFD0" fill-opacity=".55"/>
+  <path d="M761 342h26v245h-26zM800 394h20v193h-20z" fill="#71866F" fill-opacity=".4"/>
+  <path d="M184 604h678" stroke="#657A66" stroke-width="24" stroke-linecap="round"/>
+  <path d="M193 621h658v302H193z" fill="#E5E1D3" fill-opacity=".36"/>
+  <ellipse cx="632" cy="841" rx="472" ry="116" fill="#172F25" fill-opacity=".25" filter="url(#shadow)"/>
+  <!-- A plant and soft architectural details keep the scene human and calm. -->
+  <path d="M1040 624c-11-71 8-127 50-169 2 61-13 112-50 169ZM1048 626c31-75 76-111 135-117-28 52-71 91-135 117ZM1038 631c-53-56-68-110-48-162 37 43 56 96 48 162Z" fill="#4D6E51" fill-opacity=".83"/>
+  <path d="M1037 609v139" stroke="#5E4B38" stroke-width="10" stroke-linecap="round"/>
+  <path d="M1002 725h72l-11 55h-50l-11-55Z" fill="#C7835C"/>
+  <!-- Person reviewing a report. -->
+  <g transform="translate(-190 0)">
+  <path d="M304 792c20-142 83-218 185-218 115 0 186 85 206 218H304Z" fill="url(#coat)"/>
+  <path d="M410 592c29 35 69 52 118 47l-32 129-99-113 13-63Z" fill="#F4EBDD"/>
+  <path d="M421 589h96v104c-35 27-71 26-106-3l10-101Z" fill="#B96C4D"/>
+  <path d="M413 347c9-89 74-147 157-136 79 10 120 76 104 158l-14 79c-12 68-58 112-119 112-65 0-111-49-121-122l-7-91Z" fill="#7B4C37"/>
+  <path d="M446 370c5-60 47-104 101-102 57 2 92 46 86 108l-7 78c-7 57-42 93-88 91-45-2-76-41-81-97l-11-78Z" fill="#B87855"/>
+  <path d="M414 367c-5-98 55-173 158-170 70 2 116 46 123 112-28-23-50-45-61-78-38 39-105 60-202 61l-18 75Z" fill="#302D27"/>
+  <path d="M444 375c-21-4-30 10-25 31 4 18 16 31 29 34M626 379c19-5 29 6 26 25-3 19-15 33-28 36" stroke="#A96E50" stroke-width="14" stroke-linecap="round"/>
+  <path d="M492 404c10-8 22-8 32 0M574 405c10-8 22-7 31 1" stroke="#503B30" stroke-width="8" stroke-linecap="round"/>
+  <path d="M516 465c22 13 45 13 67 0" stroke="#874E3D" stroke-width="7" stroke-linecap="round"/>
+  <path d="M384 650c37 7 80 26 113 64l-68 104-99-62 54-106ZM656 633c33 13 59 36 78 69l-58 49-79-59 59-59Z" fill="#E3A77D"/>
+  </g>
+  <!-- Desk surface and a ledger. -->
+  <path d="M0 748h1200v252H0z" fill="url(#wood)"/>
+  <path d="M0 764h1200" stroke="#8E6347" stroke-opacity=".48" stroke-width="8"/>
+  <path d="M140 791h204l-19 150H158l-18-150Z" fill="#F3EEE2"/>
+  <path d="M170 823h134M169 847h114M168 871h137M167 895h91" stroke="#84927D" stroke-width="7" stroke-linecap="round" stroke-opacity=".7"/>
+  <path d="m281 806 30 134" stroke="#C2C4B4" stroke-width="3"/>
+  <rect x="767" y="521" width="334" height="235" rx="18" fill="#E7E5D8" transform="rotate(3 767 521)"/>
+  <rect x="782" y="535" width="306" height="203" rx="11" fill="url(#screen)" transform="rotate(3 782 535)"/>
+  <path d="m821 677 44-48 38 21 54-63 42 20 52-48" stroke="#E0B37F" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" transform="rotate(3 821 677)"/>
+  <path d="M819 704h221" stroke="#DCE7D8" stroke-opacity=".28" stroke-width="5" transform="rotate(3 819 704)"/>
+  <path d="M710 765h453l-58 38H664l46-38Z" fill="#EAE7DB"/>
+  <path d="M759 779h342" stroke="#B8B7A9" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="735" cy="779" r="5" fill="#C77A53"/>
+  <!-- A small brass BCH token sits beside the paperwork. -->
+  <circle cx="394" cy="886" r="35" fill="#D8A268"/>
+  <circle cx="394" cy="886" r="28" stroke="#F1D3A7" stroke-width="2"/>
+  <text x="394" y="900" fill="#294332" font-family="Georgia,serif" font-size="38" font-weight="700" text-anchor="middle">₿</text>
+</svg>

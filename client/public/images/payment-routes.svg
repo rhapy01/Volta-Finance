@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 420" fill="none">
+ <defs><linearGradient id="bg" x1="0" y1="0" x2="900" y2="420"><stop stop-color="#E7EBDD"/><stop offset="1" stop-color="#C9D5C7"/></linearGradient><linearGradient id="card" x1="190" y1="90" x2="711" y2="345"><stop stop-color="#FFFDF7"/><stop offset="1" stop-color="#F0EEE4"/></linearGradient></defs>
+ <rect width="900" height="420" rx="18" fill="url(#bg)"/><circle cx="764" cy="70" r="116" fill="#D9AE7D" fill-opacity=".24"/><circle cx="120" cy="366" r="135" fill="#6B886B" fill-opacity=".13"/>
+ <rect x="134" y="58" width="632" height="304" rx="23" fill="#1B4432" fill-opacity=".12"/>
+ <rect x="124" y="48" width="632" height="304" rx="23" fill="url(#card)"/>
+ <text x="164" y="94" fill="#8A9688" font-family="Arial,sans-serif" font-size="13" font-weight="700" letter-spacing="2">PAYMENT ROUTE</text>
+ <text x="164" y="133" fill="#20372B" font-family="Georgia,serif" font-size="28">Choose how value should land.</text>
+ <rect x="164" y="169" width="142" height="72" rx="14" fill="#E4EBDE"/><circle cx="193" cy="205" r="19" fill="#D9A46C"/><text x="193" y="212" fill="#284431" font-family="Georgia,serif" font-size="23" font-weight="700" text-anchor="middle">₿</text><text x="224" y="202" fill="#405945" font-family="Arial,sans-serif" font-size="13" font-weight="700">BCH</text><text x="224" y="222" fill="#899387" font-family="Arial,sans-serif" font-size="10">Bitcoin Cash</text>
+ <path d="M323 205h93m-11-11 12 11-12 11" stroke="#B47A4E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+ <rect x="443" y="159" width="266" height="92" rx="15" fill="#F6F3E9" stroke="#DEE2D7"/><text x="467" y="190" fill="#849083" font-family="Arial,sans-serif" font-size="11" font-weight="700" letter-spacing="1.5">RECIPIENT ASSET</text>
+ <rect x="466" y="205" width="91" height="29" rx="8" fill="#E1EBDD"/><text x="511" y="224" fill="#31553D" font-family="Arial,sans-serif" font-size="12" font-weight="700" text-anchor="middle">PUSD</text><rect x="569" y="205" width="91" height="29" rx="8" fill="#F2E7D7"/><text x="614" y="224" fill="#8D6542" font-family="Arial,sans-serif" font-size="12" font-weight="700" text-anchor="middle">MUSD</text>
+ <path d="M165 283h548" stroke="#D9DED4" stroke-width="2"/><circle cx="176" cy="316" r="6" fill="#4F7956"/><text x="194" y="321" fill="#617164" font-family="Arial,sans-serif" font-size="12">Wallet approval stays with you</text><text x="708" y="321" fill="#B4774C" font-family="Arial,sans-serif" font-size="11" font-weight="700" text-anchor="end">VERIFY BEFORE SETTLEMENT</text>
+</svg>

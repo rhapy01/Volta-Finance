@@ -1,0 +1,12 @@
+{
+  "routes": [
+    { "path": "/", "title": "Volta Finance — BCH financial operating system" },
+    { "path": "/app", "title": "Volta Finance workspace overview" },
+    { "path": "/payments", "title": "Payments and invoices" },
+    { "path": "/payroll", "title": "Staff Payroll" },
+    { "path": "/treasury", "title": "Smart treasury" },
+    { "path": "/local-currency", "title": "Local currency access" },
+    { "path": "/records", "title": "Financial records" },
+    { "path": "/settings", "title": "Workspace settings" }
+  ]
+}
