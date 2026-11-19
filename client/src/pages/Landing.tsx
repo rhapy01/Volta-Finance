@@ -32,6 +32,7 @@ function Landing() {
     <header className="landing-nav"><LandingLogo /><nav className={menuOpen ? "landing-nav-open" : ""}><a href="#product" onClick={() => setMenuOpen(false)}>Product</a><a href="#how-it-works" onClick={() => setMenuOpen(false)}>How it works</a><a href="#security" onClick={() => setMenuOpen(false)}>Security</a><a href="#faq" onClick={() => setMenuOpen(false)}>FAQ</a></nav><div className="landing-nav-actions"><button className="landing-login" onClick={() => setLocation("/submit-invoice")}>Submit an invoice</button><button className="landing-login" onClick={goToLogin}>Sign in</button><button className="landing-nav-cta" onClick={enterApp}>Create account <ArrowUpRight size={14} /></button></div><button className="landing-menu" onClick={() => setMenuOpen(!menuOpen)} aria-label="Toggle navigation">{menuOpen ? <X size={20} /> : <Menu size={20} />}</button></header>
 
     <main>
+      <section className="landing-presentation-banner" aria-label="BCH BLAZE project presentation"><div><span className="landing-eyebrow">BCH BLAZE 2026 · Project presentation</span><p>See how Volta Finance brings BCH payments and business finance into one workspace.</p></div><a href="/volta-presentation.html" target="_blank" rel="noopener noreferrer">View the presentation <ArrowUpRight size={16} /></a></section>
       <section className="landing-hero">
         <div className="landing-hero-glow" />
         <div className="landing-hero-copy-column"><div className="landing-kicker"><span><Sparkles size={13} /> Financial operations, made clearer</span></div>

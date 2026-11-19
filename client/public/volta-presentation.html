@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f1e9">
+  <meta name="description" content="Volta Finance: a BCH financial workspace for invoicing, payments, payroll, and verified records.">
+  <title>Volta Finance | BCH BLAZE 2026</title>
+  <style>
+    :root { color-scheme: light; --paper: #f4f1e9; --white: #fffefa; --ink: #19271f; --muted: #68746a; --green: #174b36; --deep: #102f25; --brass: #c18b56; --line: rgba(29,56,42,.15); }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-snap-type: y proximity; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    a { color: inherit; }
+    .topbar { position: sticky; top: 0; z-index: 5; display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 15px max(24px, calc((100vw - 1120px)/2)); border-bottom: 1px solid var(--line); background: rgba(244,241,233,.94); backdrop-filter: blur(12px); }
+    .brand { display: flex; align-items: center; gap: 10px; font: 700 18px Georgia, serif; text-decoration: none; }
+    .mark { color: var(--green); font-size: 22px; }
+    .toplinks { display: flex; align-items: center; gap: 16px; color: var(--muted); font-size: 12px; }
+    .toplinks a { text-decoration: none; }.toplinks a:hover { color: var(--green); }
+    .slides { max-width: 1120px; margin: 0 auto; padding: 20px 24px 54px; }
+    .slide { min-height: min(78vh, 720px); margin: 20px 0; padding: clamp(32px, 7vw, 84px); display: flex; flex-direction: column; justify-content: center; scroll-snap-align: start; border: 1px solid var(--line); border-radius: 22px; background: var(--white); box-shadow: 0 20px 55px rgba(25,39,31,.055); }
+    .slide:first-child { color: #f8f5eb; background: radial-gradient(ellipse at 87% 8%, rgba(193,139,86,.26), transparent 35%), linear-gradient(130deg, var(--green), var(--deep)); }
+    .eyebrow { color: #a66d43; font-size: 10px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+    .slide:first-child .eyebrow { color: #ddb17e; }
+    h1, h2 { max-width: 820px; margin: 20px 0 0; font: 500 clamp(42px, 7.4vw, 82px)/.98 Georgia, serif; letter-spacing: -.055em; }
+    h2 { font-size: clamp(36px, 5.6vw, 64px); }
+    .subtitle { max-width: 710px; margin: 22px 0 0; color: var(--muted); font: 400 clamp(18px, 2.6vw, 25px)/1.5 Georgia, serif; }
+    .slide:first-child .subtitle { color: rgba(248,245,235,.76); }
+    .meta { margin-top: 40px; color: rgba(248,245,235,.65); font-size: 12px; }
+    .pitch { display: grid; grid-template-columns: 1.2fr .8fr; gap: 36px; align-items: end; }
+    .pitch-copy { max-width: 640px; color: var(--muted); font-size: 18px; line-height: 1.75; }
+    .product-card { padding: 24px; border: 1px solid var(--line); border-radius: 16px; background: #f1f3ed; }
+    .product-card small { color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .13em; }
+    .route { margin-top: 15px; display: flex; gap: 8px; align-items: center; }
+    .route b { padding: 9px 12px; border-radius: 9px; background: white; color: var(--green); font-size: 12px; }
+    .route i { width: 22px; height: 1px; background: #9daa9c; }
+    .story { max-width: 810px; color: var(--muted); font: 400 clamp(19px, 2.7vw, 27px)/1.65 Georgia, serif; }
+    .story strong { color: var(--green); font-weight: 500; }
+    .benefits { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 30px; }
+    .benefit { min-height: 145px; padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: #f8f7f1; }
+    .benefit span { color: #a66d43; font: 500 14px Georgia, serif; }
+    .benefit h3 { margin: 14px 0 0; font: 500 21px Georgia, serif; }
+    .benefit p { margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .network-note { margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.6; }
+    .links { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
+    .button { display: inline-flex; align-items: center; gap: 8px; padding: 12px 16px; border-radius: 999px; background: var(--green); color: white; font-size: 12px; font-weight: 750; text-decoration: none; }
+    .button.secondary { border: 1px solid var(--line); background: transparent; color: var(--ink); }
+    .slide:first-child .button.secondary { border-color: rgba(248,245,235,.4); background: rgba(255,255,255,.08); color: #f8f5eb; }
+    .foot { max-width: 1120px; margin: 0 auto; padding: 0 24px 30px; display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font-size: 11px; }
+    @media (max-width: 680px) { .topbar { padding: 13px 17px; }.toplinks { gap: 10px; font-size: 10px; }.toplinks a:first-child { display: none; }.slides { padding: 10px 12px 30px; }.slide { min-height: 78vh; margin: 12px 0; padding: 28px 22px; border-radius: 16px; }.pitch { grid-template-columns: 1fr; gap: 24px; }.pitch-copy { font-size: 15px; }.benefits { grid-template-columns: 1fr; gap: 10px; }.benefit { min-height: auto; }.foot { padding: 0 16px 20px; flex-direction: column; } }
+    @media print { @page { size: 13.333in 7.5in; margin: 0; } html { scroll-snap-type: none; }.topbar, .foot { display: none; }.slides { max-width: none; padding: 0; }.slide { min-height: 7.5in; margin: 0; padding: .75in; border: 0; border-radius: 0; box-shadow: none; break-after: page; }.slide:last-child { break-after: auto; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="mark" aria-hidden="true">₿</span> Volta Finance</a>
+    <nav class="toplinks" aria-label="Presentation slides"><a href="#identity">01 · Project</a><a href="#pitch">02 · Pitch</a><a href="#story">03 · Story</a><a href="#benefits">04 · Benefits</a></nav>
+  </header>
+  <main class="slides">
+    <section class="slide" id="identity" aria-labelledby="title">
+      <span class="eyebrow">BCH BLAZE 2026 · Project presentation</span>
+      <h1 id="title">Volta Finance</h1>
+      <p class="subtitle">Financial operations for businesses using Bitcoin Cash.</p>
+      <p class="meta">Built for BCH BLAZE 2026 by the Volta Finance team.</p>
+      <div class="links"><a class="button" href="https://github.com/rhapy01/Volta-Finance" target="_blank" rel="noopener noreferrer">Project source ↗</a><a class="button secondary" href="/">Open Volta Finance ↗</a></div>
+    </section>
+    <section class="slide" id="pitch" aria-labelledby="pitch-title">
+      <span class="eyebrow">The project</span>
+      <div class="pitch">
+        <div><h2 id="pitch-title">Business finance, built around BCH.</h2><p class="pitch-copy">Volta Finance helps a business create invoices, receive BCH or CashTokens, organize staff payroll, and keep transaction-backed financial records in one workspace. Compatible BCH wallets connect through WizardConnect when someone is ready to approve a payment.</p></div>
+        <div class="product-card"><small>PAYMENT ASSETS</small><div class="route" aria-label="Bitcoin Cash, ParyonUSD, and MoriaUSD"><b>BCH</b><i></i><b>PUSD</b><i></i><b>MUSD</b></div><p class="network-note">Users review a transaction in their wallet before signing. Volta verifies the resulting payment before recording it as settled.</p></div>
+      </div>
+    </section>
+    <section class="slide" id="story" aria-labelledby="story-title">
+      <span class="eyebrow">The story</span>
+      <h2 id="story-title">Business money work is split across too many steps.</h2>
+      <p class="story">A team may invoice in one place, arrange payroll in another, and still have to check the blockchain to know what actually settled. <strong>Volta Finance brings these tasks into one BCH-focused workspace</strong> and ties payment records to verified transaction results, while the wallet owner keeps control of signing.</p>
+    </section>
+    <section class="slide" id="benefits" aria-labelledby="benefits-title">
+      <span class="eyebrow">Why Volta Finance</span>
+      <h2 id="benefits-title">Clear operations. Verified payments.</h2>
+      <div class="benefits">
+        <article class="benefit"><span>01</span><h3>Invoices and BCH payments</h3><p>Create and pay invoices with BCH and CashTokens, with wallet approval and payment verification.</p></article>
+        <article class="benefit"><span>02</span><h3>Staff Payroll</h3><p>Set staff payout preferences, prepare a run, and track each payout through settlement.</p></article>
+        <article class="benefit"><span>03</span><h3>Wallet stays in the user's hands</h3><p>WizardConnect lets a compatible BCH wallet review and sign transactions directly.</p></article>
+        <article class="benefit"><span>04</span><h3>Records linked to outcomes</h3><p>Keep invoices, payroll activity, and financial records together with verified transaction status.</p></article>
+      </div>
+      <p class="network-note">BCH and CashToken invoice/payment flows support mainnet and Chipnet where configured. The combined payroll composer runs on Chipnet. Stellar settlement is currently on Testnet.</p>
+      <div class="links"><a class="button" href="/login?mode=signup">Explore the workspace ↗</a><a class="button secondary" href="https://docs.google.com/presentation/d/1Yfuk9CJkf4U9M_WukcELhumWgj3Ak6345Ewy8hSp-Hk/edit?usp=sharing" target="_blank" rel="noopener noreferrer">BCH BLAZE Widget Factory template ↗</a></div>
+    </section>
+  </main>
+  <footer class="foot"><span>Volta Finance · BCH BLAZE 2026</span><span>Project presentation based on the BCH BLAZE Widget Factory template.</span></footer>
+</body>
+</html>
