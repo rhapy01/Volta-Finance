@@ -1,7 +1,10 @@
 import { boolean, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 
 export type Asset = "BCH" | "PUSD" | "MUSD";
-export type PayrollAsset = Asset | "XLM" | "USDC";
+export type PayrollAsset = Asset | "XLM" | "USDC" | "BSUSDC" | "BSETH" | "ARUSDC" | "BMUSDC" | "AMUSDC";
+export type EvmReceiveNetwork = "base-sepolia" | "arc-testnet" | "base-mainnet" | "arc-mainnet";
+export type StellarReceiveNetwork = "stellar-testnet" | "stellar-mainnet";
+export type EvmReceiveAsset = "USDC" | "ETH";
 export type TreasuryPlanConfiguration = {
   allocations: { tax: number; savings: number; payroll: number; operating: number };
   reserveGoal: { amount: string; asset: Asset; targetDate: string | null } | null;
@@ -37,6 +40,15 @@ export const userSessions = pgTable("user_sessions", {
   createdAt: createdAt(),
 }, (table) => [index("user_sessions_user_id_idx").on(table.userId), index("user_sessions_expires_at_idx").on(table.expiresAt)]);
 
+/** Hashed, single-use password reset tokens. Raw tokens are sent only by email. */
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: createdAt(),
+}, (table) => [index("password_reset_tokens_user_created_idx").on(table.userId, table.createdAt), index("password_reset_tokens_expires_at_idx").on(table.expiresAt)]);
+
 export const workspaces = pgTable("workspaces", {
   id: serial("id").primaryKey(),
   ownerUserId: integer("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -45,6 +57,13 @@ export const workspaces = pgTable("workspaces", {
   createdAt: createdAt(),
   updatedAt: updatedAt("updated_at"),
 }, (table) => [index("workspaces_owner_user_id_idx").on(table.ownerUserId)]);
+
+/** App-wide activation boundary for keeping legacy testnet activity archived. */
+export const systemSettings = pgTable("system_settings", {
+  key: varchar("key", { length: 80 }).primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: updatedAt("updated_at"),
+});
 
 export const workspaceMembers = pgTable("workspace_members", {
   id: serial("id").primaryKey(),
@@ -90,6 +109,7 @@ export const wallets = pgTable("wallets", {
   provider: varchar("provider", { length: 64 }).notNull(),
   network: enumText<Network>("network", 16).default("mainnet").notNull(),
   connectionStatus: enumText<"pending" | "connected" | "disconnected">("connection_status", 16).default("connected").notNull(),
+  isArchived: boolean("is_archived").default(false).notNull(),
   address: varchar("address", { length: 128 }).notNull(),
   createdAt: createdAt(),
   updatedAt: updatedAt("updated_at"),
@@ -104,20 +124,37 @@ export const paymentDestinations = pgTable("payment_destinations", {
   network: enumText<Network>("network", 16).default("mainnet").notNull(),
   address: varchar("address", { length: 128 }).notNull(),
   isDefault: boolean("is_default").default(false).notNull(),
+  isArchived: boolean("is_archived").default(false).notNull(),
   createdAt: createdAt(),
   updatedAt: updatedAt("updated_at"),
 }, (table) => [index("payment_destinations_user_asset_idx").on(table.userId, table.asset, table.network)]);
 
-/** Stellar Testnet public receiving addresses saved by the account owner. */
+/** Stellar public receiving addresses saved separately for Mainnet and Testnet. */
 export const stellarDestinations = pgTable("stellar_destinations", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   label: varchar("label", { length: 80 }).notNull(),
   address: varchar("address", { length: 56 }).notNull(),
+  network: enumText<StellarReceiveNetwork>("network", 24).default("stellar-testnet").notNull(),
   isDefault: boolean("is_default").default(false).notNull(),
+  isArchived: boolean("is_archived").default(false).notNull(),
   createdAt: createdAt(),
   updatedAt: updatedAt("updated_at"),
-}, (table) => [uniqueIndex("stellar_destinations_user_address_unique").on(table.userId, table.address), index("stellar_destinations_user_idx").on(table.userId, table.createdAt)]);
+}, (table) => [uniqueIndex("stellar_destinations_user_network_address_unique").on(table.userId, table.network, table.address), index("stellar_destinations_user_idx").on(table.userId, table.createdAt)]);
+
+/** EVM receiving addresses are network-specific; the address itself can be reused across networks. */
+export const evmDestinations = pgTable("evm_destinations", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  label: varchar("label", { length: 80 }).notNull(),
+  network: enumText<EvmReceiveNetwork>("network", 24).notNull(),
+  asset: enumText<EvmReceiveAsset>("asset", 8).notNull(),
+  address: varchar("address", { length: 42 }).notNull(),
+  isDefault: boolean("is_default").default(false).notNull(),
+  isArchived: boolean("is_archived").default(false).notNull(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt("updated_at"),
+}, (table) => [uniqueIndex("evm_destinations_user_network_asset_address_unique").on(table.userId, table.network, table.asset, table.address), index("evm_destinations_user_network_asset_idx").on(table.userId, table.network, table.asset, table.createdAt)]);
 
 export const invoices = pgTable("invoices", {
   id: serial("id").primaryKey(),
@@ -137,11 +174,12 @@ export const invoices = pgTable("invoices", {
   requestAsset: enumText<"USDT" | Asset>("request_asset", 8).default("USDT").notNull(),
   receivedAmountAtomic: varchar("received_amount_atomic", { length: 80 }),
   asset: enumText<Asset>("asset", 8).notNull(),
-  deliveryAsset: enumText<"XLM">("delivery_asset", 8),
-  deliveryNetwork: enumText<"stellar-testnet">("delivery_network", 24),
+  deliveryAsset: enumText<"XLM" | "USDC" | "ETH">("delivery_asset", 8),
+  deliveryNetwork: enumText<"stellar-testnet" | EvmReceiveNetwork>("delivery_network", 24),
   dueDate: varchar("due_date", { length: 40 }).notNull(),
   receivingAddress: varchar("receiving_address", { length: 128 }),
   status: enumText<"draft" | "submitted" | "awaiting_payment" | "awaiting_verification" | "paid" | "expired" | "cancelled">("status", 32).default("draft").notNull(),
+  dataNetwork: enumText<"mainnet" | "testnet">("data_network", 16).default("mainnet").notNull(),
   externalInvoiceId: varchar("external_invoice_id", { length: 128 }),
   paymentTxid: varchar("payment_txid", { length: 128 }),
   receiptHtml: text("receipt_html"),
@@ -161,12 +199,35 @@ export const paymentIntents = pgTable("payment_intents", {
   inputAmountAtomic: varchar("input_amount_atomic", { length: 80 }).notNull(),
   expectedOutputAtomic: varchar("expected_output_atomic", { length: 80 }).notNull(),
   status: enumText<"quoted" | "awaiting_funding" | "awaiting_signature" | "broadcast" | "pending_verification" | "completed" | "failed">("status", 32).default("quoted").notNull(),
+  dataNetwork: enumText<"mainnet" | "testnet">("data_network", 16).default("mainnet").notNull(),
   quote: jsonb("quote").notNull(),
   txid: varchar("txid", { length: 128 }),
   failureReason: text("failure_reason"),
   createdAt: createdAt(),
   updatedAt: updatedAt("updated_at"),
 }, (table) => [index("payment_intents_workspace_created_idx").on(table.workspaceId, table.createdAt)]);
+
+/** Public Pay intents are self-funded and do not require a workspace account. */
+export const publicPayIntents = pgTable("public_pay_intents", {
+  id: serial("id").primaryKey(),
+  publicId: varchar("public_id", { length: 40 }).notNull().unique(),
+  sourceAsset: enumText<"BCH" | "PUSD">("source_asset", 8).notNull(),
+  sourceAmountAtomic: varchar("source_amount_atomic", { length: 80 }).notNull(),
+  depositAddress: varchar("deposit_address", { length: 128 }).notNull(),
+  sourceTxid: varchar("source_txid", { length: 128 }),
+  destinationNetwork: enumText<"stellar-testnet" | EvmReceiveNetwork>("destination_network", 24).notNull(),
+  destinationAsset: enumText<"XLM" | "USDC">("destination_asset", 8).notNull(),
+  destinationAddress: varchar("destination_address", { length: 128 }).notNull(),
+  dataNetwork: enumText<"mainnet" | "testnet">("data_network", 16).default("testnet").notNull(),
+  expectedOutputAtomic: varchar("expected_output_atomic", { length: 80 }).notNull(),
+  quote: jsonb("quote").notNull(),
+  status: enumText<"awaiting_funding" | "pending_verification" | "paying" | "completed" | "failed">("status", 32).default("awaiting_funding").notNull(),
+  payoutTxid: varchar("payout_txid", { length: 128 }),
+  payoutSignedPayload: text("payout_signed_payload"),
+  failureReason: text("failure_reason"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt("updated_at"),
+}, (table) => [index("public_pay_intents_created_idx").on(table.createdAt), uniqueIndex("public_pay_intents_source_txid_idx").on(table.sourceTxid)]);
 
 export const crosschainIntents = pgTable("crosschain_intents", {
   id: serial("id").primaryKey(),
@@ -185,6 +246,7 @@ export const crosschainIntents = pgTable("crosschain_intents", {
   expectedOutputAtomic: varchar("expected_output_atomic", { length: 80 }).notNull(),
   quote: jsonb("quote").notNull(),
   status: enumText<"awaiting_payment" | "pending_verification" | "paying" | "completed" | "failed" | "expired">("status", 32).default("awaiting_payment").notNull(),
+  dataNetwork: enumText<"mainnet" | "testnet">("data_network", 16).default("testnet").notNull(),
   stellarTxid: varchar("stellar_txid", { length: 128 }),
   stellarSignedXdr: text("stellar_signed_xdr"),
   failureReason: text("failure_reason"),
@@ -192,6 +254,30 @@ export const crosschainIntents = pgTable("crosschain_intents", {
   createdAt: createdAt(),
   updatedAt: updatedAt("updated_at"),
   }, (table) => [index("crosschain_intents_workspace_created_idx").on(table.workspaceId, table.createdAt), index("crosschain_intents_invoice_idx").on(table.invoicePublicId), uniqueIndex("crosschain_intents_source_txid_idx").on(table.sourceTxid), uniqueIndex("crosschain_intents_stellar_txid_idx").on(table.stellarTxid)]);
+
+/** EVM settlement stays separate from the existing Stellar intent flow. */
+export const evmCrosschainIntents = pgTable("evm_crosschain_intents", {
+  id: serial("id").primaryKey(),
+  publicId: varchar("public_id", { length: 40 }).notNull().unique(),
+  workspaceId: integer("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  createdByUserId: integer("created_by_user_id").notNull().references(() => users.id),
+  invoicePublicId: varchar("invoice_public_id", { length: 32 }),
+  sourceAsset: enumText<"BCH" | "PUSD">("source_asset", 8).notNull(),
+  sourceAmountAtomic: varchar("source_amount_atomic", { length: 80 }).notNull(),
+  depositAddress: varchar("deposit_address", { length: 128 }).notNull(),
+  sourceTxid: varchar("source_txid", { length: 128 }),
+  destinationNetwork: enumText<EvmReceiveNetwork>("destination_network", 24).notNull(),
+  destinationAsset: enumText<EvmReceiveAsset>("destination_asset", 8).notNull(),
+  destinationAddress: varchar("destination_address", { length: 128 }).notNull(),
+  expectedOutputAtomic: varchar("expected_output_atomic", { length: 80 }).notNull(),
+  payoutTxid: varchar("payout_txid", { length: 128 }),
+  quote: jsonb("quote").notNull(),
+  status: enumText<"quoted" | "awaiting_funding" | "pending_verification" | "completed" | "failed">("status", 32).default("awaiting_funding").notNull(),
+  dataNetwork: enumText<"mainnet" | "testnet">("data_network", 16).default("testnet").notNull(),
+  failureReason: text("failure_reason"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt("updated_at"),
+}, (table) => [index("evm_crosschain_intents_workspace_created_idx").on(table.workspaceId, table.createdAt), index("evm_crosschain_intents_invoice_idx").on(table.invoicePublicId), uniqueIndex("evm_crosschain_intents_source_txid_idx").on(table.sourceTxid)]);
 
 export const blockchainTransactions = pgTable("blockchain_transactions", {
   id: serial("id").primaryKey(),
@@ -216,6 +302,7 @@ export const ledgerEntries = pgTable("ledger_entries", {
   state: enumText<"pending" | "posted" | "reversed">("state", 16).default("pending").notNull(),
   externalTxid: varchar("external_txid", { length: 128 }),
   account: varchar("account", { length: 120 }).notNull(),
+  dataNetwork: enumText<"mainnet" | "testnet">("data_network", 16).default("mainnet").notNull(),
   createdAt: createdAt(),
 }, (table) => [index("ledger_entries_workspace_created_idx").on(table.workspaceId, table.createdAt)]);
 
@@ -226,6 +313,7 @@ export const auditEvents = pgTable("audit_events", {
   action: varchar("action", { length: 120 }).notNull(),
   entityType: varchar("entity_type", { length: 80 }).notNull(),
   entityId: varchar("entity_id", { length: 128 }),
+  dataNetwork: enumText<"mainnet" | "testnet">("data_network", 16).default("mainnet").notNull(),
   metadata: jsonb("metadata"),
   createdAt: createdAt(),
 }, (table) => [index("audit_events_workspace_created_idx").on(table.workspaceId, table.createdAt)]);
@@ -241,6 +329,7 @@ export const notifications = pgTable("notifications", {
   href: varchar("href", { length: 240 }),
   entityType: varchar("entity_type", { length: 64 }),
   entityId: varchar("entity_id", { length: 128 }),
+  dataNetwork: enumText<"mainnet" | "testnet">("data_network", 16).default("mainnet").notNull(),
   readAt: timestamp("read_at", { withTimezone: true }),
   createdAt: createdAt(),
 }, (table) => [index("notifications_recipient_created_idx").on(table.recipientUserId, table.createdAt), index("notifications_recipient_read_idx").on(table.recipientUserId, table.readAt)]);
@@ -276,7 +365,11 @@ export const payrollRuns = pgTable("payroll_runs", {
   stellarPayoutTxid: varchar("stellar_payout_txid", { length: 128 }),
   stellarPayoutSignedXdr: text("stellar_payout_signed_xdr"),
   stellarPayoutQuote: jsonb("stellar_payout_quote"),
+  evmFundingAddress: varchar("evm_funding_address", { length: 128 }),
+  evmFundingAmountAtomic: varchar("evm_funding_amount_atomic", { length: 80 }),
+  evmFundingTxid: varchar("evm_funding_txid", { length: 128 }),
   status: enumText<"draft" | "approved" | "processing" | "completed" | "partial" | "failed" | "cancelled">("status", 16).default("draft").notNull(),
+  dataNetwork: enumText<"mainnet" | "testnet">("data_network", 16).default("mainnet").notNull(),
   createdAt: createdAt(),
   updatedAt: updatedAt("updated_at"),
 }, (table) => [index("payroll_runs_workspace_created_idx").on(table.workspaceId, table.createdAt)]);
@@ -319,6 +412,7 @@ export type Invoice = typeof invoices.$inferSelect;
 export type Wallet = typeof wallets.$inferSelect;
 export type PaymentDestination = typeof paymentDestinations.$inferSelect;
 export type PaymentIntent = typeof paymentIntents.$inferSelect;
+export type EvmCrosschainIntent = typeof evmCrosschainIntents.$inferSelect;
 export type BlockchainTransaction = typeof blockchainTransactions.$inferSelect;
 export type LedgerEntry = typeof ledgerEntries.$inferSelect;
 export type AuditEvent = typeof auditEvents.$inferSelect;

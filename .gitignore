@@ -116,3 +116,6 @@ temp/
 .tmp/
 .codex-patches/
 .pnpm-patches/
+
+.vercel
+.env*

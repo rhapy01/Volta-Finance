@@ -5,6 +5,19 @@ import type { TrpcContext } from "./context";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
+  errorFormatter({ shape, error }) {
+    if (process.env.NODE_ENV !== "production") return shape;
+    const safeClientErrorCodes = new Set([
+      "PARSE_ERROR", "BAD_REQUEST", "UNAUTHORIZED", "FORBIDDEN", "NOT_FOUND",
+      "METHOD_NOT_SUPPORTED", "CONFLICT", "PRECONDITION_FAILED", "PAYMENT_REQUIRED",
+      "TOO_MANY_REQUESTS",
+    ]);
+    return {
+      ...shape,
+      message: safeClientErrorCodes.has(error.code) ? shape.message : "Something went wrong. Please try again.",
+      data: { ...shape.data, stack: undefined },
+    };
+  },
 });
 
 export const router = t.router;

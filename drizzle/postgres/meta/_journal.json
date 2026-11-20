@@ -127,6 +127,62 @@
       "when": 1795070753390,
       "tag": "0017_yummy_mad_thinker",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1795116864659,
+      "tag": "0018_sticky_ken_ellis",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795124532345,
+      "tag": "0019_fluffy_darwin",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1795125205752,
+      "tag": "0020_remarkable_molten_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1795158606864,
+      "tag": "0021_gifted_genesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1795164038074,
+      "tag": "0022_certain_thunderbolts",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1795168438769,
+      "tag": "0023_mainnet_archive_cutover",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1795169234417,
+      "tag": "0024_network_data_archive",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1795169275530,
+      "tag": "0025_notifications_public_pay_network",
+      "breakpoints": true
     }
   ]
 }

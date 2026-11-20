@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { createHmac } from "node:crypto";
+import { mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
+import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { Asset, BASE_FEE, Horizon, Keypair, Networks, Operation, StrKey, TransactionBuilder } from "@stellar/stellar-sdk";
 
 const TESTNET_HORIZON = process.env.STELLAR_TESTNET_HORIZON_URL || "https://horizon-testnet.stellar.org";
@@ -11,6 +14,30 @@ const horizon = new Horizon.Server(TESTNET_HORIZON);
 
 let cachedTreasuryPublicKey: string | undefined;
 
+function getConfiguredTreasuryKeypair() {
+  const phrase = process.env.STELLAR_TESTNET_SEED_PHRASE?.trim();
+  if (phrase) {
+    const mnemonic = phrase.normalize("NFKD").trim().split(/\s+/).join(" ");
+    if (!validateMnemonic(mnemonic, wordlist)) throw new Error("STELLAR_TESTNET_SEED_PHRASE is not a valid English BIP-39 recovery phrase.");
+    const passphrase = (process.env.STELLAR_TESTNET_SEED_PASSPHRASE || "").normalize("NFKD");
+    let node = createHmac("sha512", "ed25519 seed").update(mnemonicToSeedSync(mnemonic, passphrase)).digest();
+    let key = node.subarray(0, 32);
+    let chainCode = node.subarray(32);
+    for (const index of [44, 148, 0]) {
+      const child = Buffer.alloc(37);
+      child[0] = 0;
+      key.copy(child, 1);
+      child.writeUInt32BE(0x80000000 + index, 33);
+      node = createHmac("sha512", chainCode).update(child).digest();
+      key = node.subarray(0, 32);
+      chainCode = node.subarray(32);
+    }
+    return Keypair.fromRawEd25519Seed(new Uint8Array(key));
+  }
+  const secret = process.env.STELLAR_TESTNET_SECRET_KEY?.trim();
+  return secret ? Keypair.fromSecret(secret) : undefined;
+}
+
 export function validateStellarPublicKey(address: string) {
   try { StrKey.decodeEd25519PublicKey(address); return true; }
   catch { return false; }
@@ -18,13 +45,16 @@ export function validateStellarPublicKey(address: string) {
 
 function getTreasuryPublicKey() {
   if (cachedTreasuryPublicKey) return cachedTreasuryPublicKey;
-  const configuredSecret = process.env.STELLAR_TESTNET_SECRET_KEY?.trim();
-  const publicKey = configuredSecret
-    ? Keypair.fromSecret(configuredSecret).publicKey()
-    : execFileSync("stellar", ["keys", "public-key", SDK_IDENTITY], { encoding: "utf8", windowsHide: true, timeout: 10_000 }).trim();
+  const configuredPublicKey = process.env.STELLAR_TESTNET_PUBLIC_KEY?.trim();
+  // Read-only operations (such as quote and treasury balance checks) only need
+  // the public address. Production serverless functions do not have the Stellar
+  // CLI installed, and should not need the treasury signing key just to quote.
+  const configuredKeypair = getConfiguredTreasuryKeypair();
+  const publicKey = configuredKeypair
+    ? configuredKeypair.publicKey()
+    : configuredPublicKey || execFileSync("stellar", ["keys", "public-key", SDK_IDENTITY], { encoding: "utf8", windowsHide: true, timeout: 10_000 }).trim();
   try { StrKey.decodeEd25519PublicKey(publicKey); }
   catch { throw new Error("The configured Stellar treasury identity did not return a valid public address."); }
-  const configuredPublicKey = process.env.STELLAR_TESTNET_PUBLIC_KEY?.trim();
   if (configuredPublicKey && publicKey !== configuredPublicKey) {
     throw new Error("The Stellar treasury signing identity does not match STELLAR_TESTNET_PUBLIC_KEY.");
   }
@@ -33,9 +63,13 @@ function getTreasuryPublicKey() {
 }
 
 function signTreasuryTransaction(transaction: ReturnType<TransactionBuilder["build"]>) {
-  const configuredSecret = process.env.STELLAR_TESTNET_SECRET_KEY?.trim();
-  if (configuredSecret) {
-    transaction.sign(Keypair.fromSecret(configuredSecret));
+  const configuredKeypair = getConfiguredTreasuryKeypair();
+  if (configuredKeypair) {
+    const expectedPublicKey = process.env.STELLAR_TESTNET_PUBLIC_KEY?.trim();
+    if (expectedPublicKey && configuredKeypair.publicKey() !== expectedPublicKey) {
+      throw new Error("The configured Stellar seed phrase does not derive the configured treasury address.");
+    }
+    transaction.sign(configuredKeypair);
     return transaction;
   }
   const signedXdr = execFileSync("stellar", ["--quiet", "tx", "sign", "--network", "testnet", "--sign-with-key", SDK_IDENTITY, transaction.toXDR()], {

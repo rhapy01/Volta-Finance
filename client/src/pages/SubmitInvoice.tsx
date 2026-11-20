@@ -67,10 +67,10 @@ export default function SubmitInvoice() {
   };
 
   return <main className="guest-invoice-page">
-    <Link className="auth-back guest-invoice-back" href="/"><ArrowLeft size={15} /> Back to Volta Finance</Link>
+    <Link className="auth-back guest-invoice-back" href="/"><ArrowLeft size={15} /> Back to Voltra Finance</Link>
     <div className="guest-invoice-shell">
       <header className="guest-invoice-heading">
-        <div className="guest-invoice-brand"><span className="landing-mark"><i /><i /><i /></span><span>Volta Finance</span></div>
+        <div className="guest-invoice-brand"><img src="/voltralogo.png" alt="" /><span>Voltra Finance</span></div>
         <span className="landing-eyebrow">Secure invoice inbox</span>
         <h1>{submitted ? "Invoice sent for review." : step === "compose" ? "Create your invoice." : "Send your invoice."}</h1>
         <p>{submitted

@@ -10,14 +10,17 @@ const Home = lazy(() => import("@/pages/Home"));
 const Landing = lazy(() => import("@/pages/Landing"));
 const AuthPage = lazy(() => import("@/pages/Auth"));
 const SubmitInvoice = lazy(() => import("@/pages/SubmitInvoice"));
+const Pay = lazy(() => import("@/pages/Pay"));
 
 function Router() {
   return (
-    <Suspense fallback={<main className="grid min-h-screen place-items-center bg-[#f7f7f4] text-slate-600">Loading Volta Finance…</main>}>
+    <Suspense fallback={<main className="grid min-h-screen place-items-center bg-[#f7f7f4] text-slate-600">Loading Voltra Finance…</main>}>
       <Switch>
         <Route path="/" component={Landing} />
         <Route path="/login" component={AuthPage} />
         <Route path="/submit-invoice" component={SubmitInvoice} />
+        <Route path="/pay" component={Pay} />
+        <Route path="/app/pay" component={Home} />
         <Route path="/app" component={Home} />
         <Route path="/payments" component={Home} />
         <Route path="/payroll" component={Home} />

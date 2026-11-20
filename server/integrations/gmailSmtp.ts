@@ -8,6 +8,34 @@ type OrganizationInviteEmail = {
   inviteUrl: string;
 };
 
+export async function sendPasswordResetEmail(input: { to: string; resetUrl: string }) {
+  const username = process.env.GOOGLE_SMTP_USER?.trim();
+  const password = process.env.GOOGLE_SMTP_APP_PASSWORD?.replace(/\s/g, "");
+  if (!username || !password) return { sent: false as const, reason: "not_configured" as const };
+
+  const transport = nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 587,
+    secure: false,
+    requireTLS: true,
+    auth: { user: username, pass: password },
+  });
+  const fromName = process.env.GOOGLE_SMTP_FROM_NAME?.trim() || "Voltra Finance";
+  const safeUrl = escapeHtml(input.resetUrl);
+  try {
+    await transport.sendMail({
+      from: { name: fromName, address: username },
+      to: input.to,
+      subject: "Reset your Voltra Finance password",
+      text: `We received a request to reset your Voltra Finance password. Use this secure link within 30 minutes:\n\n${input.resetUrl}\n\nIf you did not request a password reset, you can ignore this email. Your password will not change.`,
+      html: `<div style="font-family:Arial,sans-serif;color:#162b3a;max-width:560px;margin:0 auto;padding:32px"><div style="font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:#a94f08;font-weight:700">Voltra Finance</div><h1 style="font-size:26px;margin:20px 0 12px">Reset your password</h1><p>Use the button below to choose a new password for your Voltra Finance account.</p><p style="margin:28px 0"><a href="${safeUrl}" style="background:#f07f4f;color:#162b3a;text-decoration:none;padding:13px 20px;border-radius:8px;display:inline-block;font-weight:700">Choose a new password</a></p><p style="color:#536b86;font-size:13px">This link expires in 30 minutes. If you did not request a reset, you can ignore this email. Your password will not change.</p></div>`,
+    });
+    return { sent: true as const };
+  } finally {
+    transport.close();
+  }
+}
+
 export async function sendOrganizationInviteEmail(input: OrganizationInviteEmail) {
   const username = process.env.GOOGLE_SMTP_USER?.trim();
   const password = process.env.GOOGLE_SMTP_APP_PASSWORD?.replace(/\s/g, "");

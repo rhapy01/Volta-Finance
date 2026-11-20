@@ -7,11 +7,12 @@ import { broadcastSignedTransaction, buildDirectBchBatchPayment, buildDirectCash
 import { trpc } from "@/lib/trpc";
 
 type Asset = "BCH" | "PUSD" | "MUSD";
-type Invoice = { id: string; client: string; amount: string; amountAtomic?: string; receivedAmountAtomic?: string | null; requestAsset: string; asset: Asset; deliveryAsset?: string | null; status: string; network?: "mainnet" | "chipnet"; receivingAddress?: string | null; paymentTxid?: string | null };
+type Invoice = { id: string; client: string; amount: string; amountAtomic?: string; receivedAmountAtomic?: string | null; requestAsset: string; asset: Asset; deliveryAsset?: string | null; deliveryNetwork?: string | null; status: string; network?: "mainnet" | "chipnet"; receivingAddress?: string | null; paymentTxid?: string | null };
 
 export function InvoiceInbox({ invoices, settledInvoices: createdSettledInvoices = [], wallet, onConnect, onView }: { invoices: Invoice[]; settledInvoices?: Invoice[]; wallet: WalletSession; onConnect: () => void; onView: (id: string) => void }) {
   const utils = trpc.useUtils();
   const chipnetConfig = trpc.finance.chipnetAssetConfig.useQuery();
+  const intentAssetConfig = trpc.pay.assetConfig.useQuery();
   const scan = trpc.finance.utxosForAddresses.useMutation();
   const buildSwap = trpc.finance.buildSwap.useMutation();
   const broadcast = trpc.finance.broadcastTransaction.useMutation();
@@ -20,6 +21,9 @@ export function InvoiceInbox({ invoices, settledInvoices: createdSettledInvoices
   const markBroadcast = trpc.finance.markInvoiceBatchBroadcast.useMutation();
   const confirmBatch = trpc.finance.payInvoiceBatch.useMutation();
   const createPaymentIntent = trpc.finance.createInvoicePaymentIntent.useMutation();
+  const createEvmInvoiceIntent = trpc.finance.createEvmInvoiceIntent.useMutation();
+  const recordEvmInvoiceFunding = trpc.finance.recordEvmInvoiceFunding.useMutation();
+  const settleEvmInvoice = trpc.finance.settleEvmInvoiceIntent.useMutation();
   const review = trpc.finance.reviewIncomingInvoice.useMutation({ onSuccess: async (_result, input) => { await utils.finance.incomingInvoices.invalidate(); toast.success(input.decision === "accept" ? "Invoice accepted" : "Invoice declined"); }, onError: (error) => toast.error("Invoice decision not saved", { description: error.message }) });
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [inboxView, setInboxView] = useState<"active" | "settled">("active");
@@ -48,14 +52,16 @@ export function InvoiceInbox({ invoices, settledInvoices: createdSettledInvoices
   const selected = accepted.filter((invoice) => selectedIds.includes(invoice.id));
   const receivingAsset = selected[0]?.asset;
   const network = selected[0]?.network || "chipnet";
-  const categories = network === "chipnet" ? chipnetConfig.data?.categories : undefined;
-  const needsConversion = selected.some((invoice) => (invoice.requestAsset === "USDT" ? "PUSD" : invoice.requestAsset) !== invoice.asset) || (Boolean(receivingAsset) && payAsset !== receivingAsset);
+  const categories = network === "chipnet" ? chipnetConfig.data?.categories : intentAssetConfig.data?.mainnet;
+  const isEvmInvoice = (invoice?: Invoice) => Boolean(invoice?.deliveryNetwork && ["base-sepolia", "arc-testnet", "base-mainnet", "arc-mainnet"].includes(invoice.deliveryNetwork));
+  const needsConversion = selected.some((invoice) => (invoice.requestAsset === "USDT" ? "PUSD" : invoice.requestAsset) !== invoice.asset || isEvmInvoice(invoice)) || (Boolean(receivingAsset) && payAsset !== receivingAsset);
   const allVisibleSelected = visibleAccepted.length > 0 && visibleAccepted.every((invoice) => selectedIds.includes(invoice.id));
   const canBatch = selected.length > 1 && selected.every((invoice) => invoice.asset === receivingAsset && invoice.network === selected[0].network) && payAsset === receivingAsset && !selected.some((invoice) => (invoice.requestAsset === "USDT" ? "PUSD" : invoice.requestAsset) !== invoice.asset);
   const checkedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   const toggle = (invoice: Invoice, checked: boolean) => {
     if (checked && selected.length && (invoice.network || "chipnet") !== network) { toast.error("Pay invoices from different networks separately."); return; }
+    if (checked && selected.length && invoice.deliveryNetwork !== selected[0].deliveryNetwork) { toast.error("Pay cross-network invoices separately by destination network."); return; }
     if (checked && selected.length && invoice.asset !== receivingAsset) { toast.error("Choose invoices with the same receiving asset for one payment."); return; }
     setSelectedIds((current) => checked ? current.length >= 5 || current.includes(invoice.id) ? current : [...current, invoice.id] : current.filter((id) => id !== invoice.id));
   };
@@ -91,6 +97,34 @@ export function InvoiceInbox({ invoices, settledInvoices: createdSettledInvoices
       const changeAddress = deriveWalletAddress(wallet.manager, "change", 0n, network, true);
       const tokenChangeAddress = deriveWalletAddress(wallet.manager, "change", 0n, network, true);
       if (!receiveAddress || !changeAddress || !tokenChangeAddress) throw new Error("The connected wallet did not provide compatible change addresses.");
+      if (selected.length === 1 && isEvmInvoice(selected[0])) {
+        const invoice = selected[0];
+        if (payAsset !== "BCH" && payAsset !== "PUSD") throw new Error("EVM invoice payments can be funded with BCH or PUSD.");
+        const plan = await createEvmInvoiceIntent.mutateAsync({ publicId: invoice.id, payerAsset: payAsset });
+        if (plan.intent.sourceTxid) {
+          setPhase("Checking the BCH and EVM settlement");
+          const settlement = await settleEvmInvoice.mutateAsync({ intentId: plan.intent.id });
+          toast[settlement.status === "completed" ? "success" : "info"](settlement.status === "completed" ? "Invoice payment completed" : "Invoice payment is still confirming", { description: settlement.status === "completed" ? `${invoice.client} was paid on ${invoice.deliveryNetwork}.` : "Recheck the invoice after the BCH or EVM transaction confirms." });
+          await utils.finance.incomingInvoices.invalidate();
+          return;
+        }
+        const output = [{ address: plan.depositAddress, amountAtomic: plan.sourceAmountAtomic }];
+        const paymentFunding = funding.filter((item) => payAsset === "BCH" ? !item.token : item.token?.category === categoriesByAsset.PUSD);
+        if (!paymentFunding.length) throw new Error(`No spendable ${payAsset} funds were found in the scanned wallet addresses.`);
+        const built = payAsset === "BCH"
+          ? buildDirectBchBatchPayment({ funding: paymentFunding, outputs: output, changeAddress, tokenChangeAddress })
+          : buildDirectCashTokenBatchPayment({ funding: paymentFunding, outputs: output, category: categoriesByAsset.PUSD!, changeAddress });
+        const paths: WizardInputPath[] = built.inputsToSign.map((index) => [index, paymentFunding[index].addressPath || "receive", paymentFunding[index].addressIndex ?? 0]);
+        setPhase(`Approve the ${network === "mainnet" ? "mainnet" : "Chipnet"} payment in your wallet`);
+        const signed = await signWithWizardConnect(wallet.manager, { transaction: built.unsignedTxHex, sourceOutputs: built.sourceOutputs, inputsToSign: built.inputsToSign }, paths);
+        setPhase(`Broadcasting the ${network === "mainnet" ? "mainnet" : "Chipnet"} payment`);
+        const txid = network === "chipnet" ? (await broadcast.mutateAsync({ rawTransaction: signed, network })).txid : await broadcastSignedTransaction(signed);
+        await recordEvmInvoiceFunding.mutateAsync({ intentId: plan.intent.id, txid });
+        const settlement = await settleEvmInvoice.mutateAsync({ intentId: plan.intent.id });
+        toast[settlement.status === "completed" ? "success" : "info"](settlement.status === "completed" ? "Invoice payment completed" : `${network === "mainnet" ? "Mainnet" : "Chipnet"} payment sent`, { description: settlement.status === "completed" ? `${invoice.client} was paid on ${invoice.deliveryNetwork}.` : `The recipient will receive their selected EVM asset after the ${network === "mainnet" ? "mainnet" : "Chipnet"} payment confirms. Select this invoice again to recheck settlement.` });
+        await utils.finance.incomingInvoices.invalidate();
+        return;
+      }
       const directOutputs = selected.map((invoice) => {
         if (!invoice.receivingAddress) throw new Error(`Invoice ${invoice.id} has no saved receiving address.`);
         return { address: invoice.receivingAddress, amountAtomic: invoice.receivedAmountAtomic || invoice.amountAtomic || "" };
@@ -191,7 +225,7 @@ export function InvoiceInbox({ invoices, settledInvoices: createdSettledInvoices
 
   const selectAll = (event: ChangeEvent<HTMLInputElement>) => setSelectedIds(event.target.checked ? visibleAccepted.filter((invoice) => !selected.length || (invoice.asset === receivingAsset && (invoice.network || "chipnet") === network)).map((invoice) => invoice.id) : []);
 
-  const renderInvoices = (rows: Invoice[], active: boolean) => rows.length ? <div className="space-y-3">{rows.map((invoice) => <article key={invoice.id} className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-slate-300 hover:shadow-sm sm:gap-4">{active && invoice.status === "Awaiting payment" && invoice.deliveryAsset !== "XLM" && <input type="checkbox" aria-label={`Select ${invoice.client}`} checked={checkedSet.has(invoice.id)} onChange={(event) => toggle(invoice, event.target.checked)} className="h-4 w-4 accent-orange-600" />}<div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><b className="truncate text-sm text-slate-950">{invoice.client}</b><span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${invoice.status === "Paid" ? "bg-emerald-50 text-emerald-800" : invoice.status === "Needs review" ? "bg-amber-50 text-amber-800" : "bg-blue-50 text-blue-800"}`}>{invoice.status}</span></div><p className="mt-2 text-sm font-semibold text-slate-800">{invoice.amount} {invoice.requestAsset}<span className="mx-2 text-slate-300">·</span><span className="font-normal text-slate-600">Will receive {invoice.asset}</span></p><p className="mt-1 text-xs text-slate-500">{invoice.id}</p></div><div className="flex flex-wrap items-center gap-2">{active && invoice.status === "Needs review" && reviewedId === invoice.id && <><Button size="sm" variant="outline" disabled={review.isPending} onClick={() => review.mutate({ publicId: invoice.id, decision: "decline" })}>Decline</Button><Button size="sm" disabled={review.isPending} onClick={() => review.mutate({ publicId: invoice.id, decision: "accept" })}>Accept</Button></>}<Button variant="outline" size="sm" className="rounded-xl" onClick={() => { setReviewedId(invoice.id); onView(invoice.id); }}>{invoice.status === "Paid" ? "View receipt" : "View invoice"}</Button></div></article>)}</div> : <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-5 py-10 text-center"><p className="text-sm font-semibold text-slate-700">None</p><p className="mt-1 text-xs text-slate-500">There are no {inboxView} invoices here.</p></div>;
+  const renderInvoices = (rows: Invoice[], active: boolean) => rows.length ? <div className="space-y-3">{rows.map((invoice) => <article key={invoice.id} className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-slate-300 hover:shadow-sm sm:gap-4">{active && invoice.status === "Awaiting payment" && invoice.deliveryAsset !== "XLM" && <input type="checkbox" aria-label={`Select ${invoice.client}`} checked={checkedSet.has(invoice.id)} onChange={(event) => toggle(invoice, event.target.checked)} className="h-4 w-4 accent-orange-600" />}<div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><b className="truncate text-sm text-slate-950">{invoice.client}</b><span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${invoice.status === "Paid" ? "bg-emerald-50 text-emerald-800" : invoice.status === "Needs review" ? "bg-amber-50 text-amber-800" : "bg-blue-50 text-blue-800"}`}>{invoice.status}</span></div><p className="mt-2 text-sm font-semibold text-slate-800">{invoice.amount} {invoice.requestAsset}<span className="mx-2 text-slate-300">·</span><span className="font-normal text-slate-600">Will receive {invoice.deliveryAsset ? `${invoice.deliveryAsset} · ${invoice.deliveryNetwork === "base-sepolia" ? "Base Sepolia" : invoice.deliveryNetwork === "arc-testnet" ? "Arc Testnet" : "Stellar Testnet"}` : invoice.asset}</span></p><p className="mt-1 text-xs text-slate-500">{invoice.id}</p></div><div className="flex flex-wrap items-center gap-2">{active && invoice.status === "Needs review" && reviewedId === invoice.id && <><Button size="sm" variant="outline" disabled={review.isPending} onClick={() => review.mutate({ publicId: invoice.id, decision: "decline" })}>Decline</Button><Button size="sm" disabled={review.isPending} onClick={() => review.mutate({ publicId: invoice.id, decision: "accept" })}>Accept</Button></>}<Button variant="outline" size="sm" className="rounded-xl" onClick={() => { setReviewedId(invoice.id); onView(invoice.id); }}>{invoice.status === "Paid" ? "View receipt" : "View invoice"}</Button></div></article>)}</div> : <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-5 py-10 text-center"><p className="text-sm font-semibold text-slate-700">None</p><p className="mt-1 text-xs text-slate-500">There are no {inboxView} invoices here.</p></div>;
   const pagination = (total: number, page: number, setPage: (page: number) => void) => total > pageSize && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4"><p className="text-xs text-slate-500">Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, total)} of {total}</p><div className="flex gap-2"><Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage(page - 1)}>Previous</Button><Button size="sm" variant="outline" disabled={page + 1 >= Math.ceil(total / pageSize)} onClick={() => setPage(page + 1)}>Next</Button></div></div>;
 
   return <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_8px_24px_rgba(22,34,52,.035)] sm:p-6">

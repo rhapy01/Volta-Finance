@@ -1,6 +1,7 @@
+import "dotenv/config";
 import { defineConfig } from "drizzle-kit";
 
-const directConnectionString = process.env.DATABASE_URL_UNPOOLED;
+const directConnectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
 
 export default defineConfig({
   schema: "./drizzle/schema.ts",

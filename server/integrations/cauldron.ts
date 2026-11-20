@@ -99,13 +99,13 @@ function providerQuoteOnce(input: { sell: CauldronAsset; buy: CauldronAsset; amo
 
 async function providerQuote(input: { sell: CauldronAsset; buy: CauldronAsset; amountAtomic: string; side?: "sell" | "buy"; network?: BchNetwork }) {
   let lastError: unknown;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     try { return await providerQuoteOnce(input); }
     catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
-      if (attempt > 0 || !/timed out|unavailable|closed the quote connection|could not send/i.test(message)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 350));
+      if (attempt >= 2 || !/timed out|unavailable|closed the quote connection|could not send/i.test(message)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 400 : 900));
     }
   }
   throw lastError;

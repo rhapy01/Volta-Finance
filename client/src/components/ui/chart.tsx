@@ -69,7 +69,7 @@ function ChartContainer({
 
 const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
   const colorConfig = Object.entries(config).filter(
-    ([, config]) => config.theme || config.color
+    ([key, item]) => /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(key) && (item.color ? isSafeCssColor(item.color) : item.theme && Object.values(item.theme).every(isSafeCssColor))
   );
 
   if (!colorConfig.length) {
@@ -77,28 +77,28 @@ const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
   }
 
   return (
-    <style
-      dangerouslySetInnerHTML={{
-        __html: Object.entries(THEMES)
+    <style>{Object.entries(THEMES)
           .map(
             ([theme, prefix]) => `
-${prefix} [data-chart=${id}] {
+${prefix} [data-chart="${id.replace(/[^a-zA-Z0-9_-]/g, "")}"] {
 ${colorConfig
   .map(([key, itemConfig]) => {
     const color =
       itemConfig.theme?.[theme as keyof typeof itemConfig.theme] ||
       itemConfig.color;
-    return color ? `  --color-${key}: ${color};` : null;
+    return color && isSafeCssColor(color) ? `  --color-${key}: ${color};` : null;
   })
   .join("\n")}
 }
 `
           )
-          .join("\n"),
-      }}
-    />
+          .join("\n")}</style>
   );
 };
+
+function isSafeCssColor(color: string) {
+  return /^(#[\da-f]{3,8}|(?:rgb|hsl)a?\([\d.,%\s/+-]+\)|var\(--[\w-]+\)|[a-z]{1,24})$/i.test(color.trim());
+}
 
 const ChartTooltip = RechartsPrimitive.Tooltip;
 

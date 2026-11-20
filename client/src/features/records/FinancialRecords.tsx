@@ -3,6 +3,8 @@ import { ArrowDownLeft, ArrowUpRight, ChevronLeft, ChevronRight, Search } from "
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
+import type { NetworkMode } from "@/lib/networkMode";
+import { payrollAssetLabel } from "@/lib/payrollAssetLabels";
 
 type Asset = "BCH" | "PUSD" | "MUSD" | "XLM" | "USDC" | "USDT";
 type RecordItem = {
@@ -19,6 +21,7 @@ type RecordItem = {
   sourceAsset?: Asset | null;
   outputAmount?: string | null;
   outputAsset?: Asset | null;
+  outputAssetLabel?: string;
   networkFeeAtomic?: string | null;
   sourceTxid?: string | null;
   txid?: string | null;
@@ -30,8 +33,9 @@ type RecordItem = {
 type RecordFilter = "All activity" | "Invoices" | "Payroll" | "Payments" | "Cross-chain";
 const PAGE_SIZE = 8;
 
-export function FinancialRecords({ isOrganization = false }: { isOrganization?: boolean }) {
-  const recordsQuery = trpc.finance.financialRecords.useQuery(undefined, { retry: false });
+export function FinancialRecords({ isOrganization = false, networkMode = "mainnet" }: { isOrganization?: boolean; networkMode?: NetworkMode }) {
+  const view = networkMode === "mainnet" ? "mainnet" : "testnet_archive";
+  const recordsQuery = trpc.finance.financialRecords.useQuery({ view }, { retry: false });
   const loadSources = trpc.finance.transactionInputSources.useMutation();
   const verifyOutput = trpc.finance.verifyOutput.useMutation();
   const [filter, setFilter] = useState<RecordFilter>("All activity");
@@ -56,6 +60,9 @@ export function FinancialRecords({ isOrganization = false }: { isOrganization?: 
       const sourceAsset = typeof crosschain?.sourceAsset === "string" ? crosschain.sourceAsset as Asset : route?.sourceAsset ?? linkedIntent?.payerAsset ?? (invoice.status === "paid" ? invoice.asset : null);
       const outputAmount = typeof crosschain?.destinationAmountAtomic === "string" ? crosschain.destinationAmountAtomic : route?.expectedOutputAtomic ?? invoice.receivedAmountAtomic;
       const outputAsset = invoice.deliveryAsset === "XLM" ? "XLM" : invoice.asset;
+      const outputAssetLabel = invoice.deliveryAsset === "USDC" && invoice.deliveryNetwork
+        ? `USDC · ${{ "base-sepolia": "Base Sepolia", "arc-testnet": "Arc Testnet", "base-mainnet": "Base Mainnet", "arc-mainnet": "Arc Mainnet", "stellar-testnet": "Stellar Testnet" }[invoice.deliveryNetwork]}`
+        : undefined;
       rows.push({
         id: `invoice-${invoice.id}`,
         kind: invoice.status === "paid" ? "Invoice payment" : "Invoice",
@@ -70,6 +77,7 @@ export function FinancialRecords({ isOrganization = false }: { isOrganization?: 
         sourceAsset,
         outputAmount: outputAmount || (invoice.status === "paid" && sourceAsset === invoice.asset ? invoice.amountAtomic : null),
         outputAsset,
+        outputAssetLabel,
         sourceTxid,
         txid: typeof crosschain?.stellarTxid === "string" ? crosschain.stellarTxid : route?.stellarTxid || invoice.paymentTxid,
         sourceNetwork: invoice.receivingAddress?.startsWith("bchtest:") || invoice.deliveryAsset === "XLM" ? "chipnet" : "mainnet",
@@ -80,8 +88,8 @@ export function FinancialRecords({ isOrganization = false }: { isOrganization?: 
       rows.push({
       id: `payroll-${item.id}`, kind: item.personalIncome ? "Organization salary payment" : "Payroll", title: item.personalIncome ? `${item.period} organization salary` : `${item.period} payroll · ${item.employeeName}`, status: item.status, date: item.updatedAt,
       counterparty: item.personalIncome ? item.organizationName : item.employeeName, counterpartyEmail: item.personalIncome ? null : item.employeeEmail, requestedAmount: item.displayAmount, requestedAsset: item.requestedAmountUnit,
-      sourceAsset: item.sourceAsset, outputAmount: item.amountAtomic, outputAsset: item.asset, txid: item.txid, sourceTxid: item.txid,
-      sourceNetwork: "chipnet", destinationAddress: item.payoutAddress,
+      sourceAsset: item.sourceAsset, outputAmount: item.amountAtomic, outputAsset: item.asset as Asset, outputAssetLabel: payrollAssetLabel(item.asset, networkMode), txid: item.txid, sourceTxid: item.txid,
+      sourceNetwork: networkMode === "mainnet" ? "mainnet" : "chipnet", destinationAddress: item.payoutAddress,
       });
     }
     const payrollBatches = new Map<string, typeof data.payroll>();
@@ -103,16 +111,16 @@ export function FinancialRecords({ isOrganization = false }: { isOrganization?: 
       if (intent.txid && data.invoices.some((invoice) => invoice.paymentTxid === intent.txid)) continue;
       rows.push({ id: `intent-${intent.id}`, kind: "Payment intent", title: `${intent.payerAsset} payment intent`, status: intent.status, date: intent.updatedAt,
         counterparty: intent.recipientAddress || "Wallet recipient", requestedAmount: null, sourceAmount: intent.inputAmountAtomic, sourceAsset: intent.payerAsset, outputAmount: intent.expectedOutputAtomic, outputAsset: intent.recipientAsset,
-        txid: intent.txid, sourceTxid: intent.txid, sourceNetwork: "chipnet", destinationAddress: intent.recipientAddress });
+        txid: intent.txid, sourceTxid: intent.txid, sourceNetwork: networkMode === "mainnet" ? "mainnet" : "chipnet", destinationAddress: intent.recipientAddress });
     }
     for (const intent of data.crosschain) {
       if (intent.invoicePublicId && data.invoices.some((invoice) => invoice.publicId === intent.invoicePublicId)) continue;
       rows.push({ id: `crosschain-${intent.id}`, kind: "Cross-chain payment", title: intent.invoicePublicId ? `Invoice ${intent.invoicePublicId}` : "Cross-chain payment",
-      status: intent.status, date: intent.updatedAt, counterparty: "Stellar Testnet recipient", sourceAmount: intent.sourceAmountAtomic, sourceAsset: intent.sourceAsset,
-      outputAmount: intent.expectedOutputAtomic, outputAsset: "XLM", txid: intent.stellarTxid, sourceTxid: intent.sourceTxid, sourceNetwork: "chipnet", destinationAddress: intent.destinationAddress });
+      status: intent.status, date: intent.updatedAt, counterparty: networkMode === "mainnet" ? "Cross-chain recipient" : "Stellar Testnet recipient", sourceAmount: intent.sourceAmountAtomic, sourceAsset: intent.sourceAsset,
+      outputAmount: intent.expectedOutputAtomic, outputAsset: "XLM", txid: intent.stellarTxid, sourceTxid: intent.sourceTxid, sourceNetwork: networkMode === "mainnet" ? "mainnet" : "chipnet", destinationAddress: intent.destinationAddress });
     }
     return rows.sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime());
-  }, [recordsQuery.data]);
+  }, [recordsQuery.data, networkMode]);
 
   const filteredRecords = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -184,7 +192,7 @@ export function FinancialRecords({ isOrganization = false }: { isOrganization?: 
         const isConfirmed = ["paid", "verified", "completed"].includes(record.status.toLowerCase());
         const reconciliationLabel = reconciliation[record.id] === "matched" ? "Reconciled" : reconciliation[record.id] === "mismatch" ? "Mismatch" : reconciliation[record.id] === "pending" ? "Awaiting confirmation" : isConfirmed ? "Confirmed on-chain" : "Needs reconciliation";
         const reconciliationTone = reconciliation[record.id] === "mismatch" ? "bg-red-50 text-red-800" : reconciliation[record.id] === "matched" || (reconciliation[record.id] === undefined && isConfirmed) ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800";
-        return <article key={record.id} className="rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-slate-300 hover:shadow-sm sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-600">{record.kind}</span><span className="rounded-full bg-orange-50 px-2.5 py-1 text-[10px] font-semibold capitalize text-orange-800">{record.status.replaceAll("_", " ")}</span></div><b className="mt-2 block text-base text-slate-950">{record.title}</b><p className="mt-1 text-sm text-slate-500">{new Date(record.date).toLocaleString()} <span className="mx-1">·</span> {record.counterparty}{record.counterpartyEmail ? ` (${record.counterpartyEmail})` : ""}</p></div><div className="min-w-[180px] rounded-xl bg-slate-50 px-4 py-3 text-left sm:text-right">{record.requestedAmount && <p className="text-sm font-semibold text-slate-950">{record.requestedAmount} {record.requestedAsset} requested</p>}{record.sourceAsset && <p className="mt-1 text-xs text-slate-600">Paid from {record.sourceAmount ? `${formatAtomic(record.sourceAmount, record.sourceAsset)} ` : ""}{record.sourceAsset}</p>}{record.outputAsset && record.outputAmount && <p className="mt-1 text-xs font-semibold text-emerald-800">Will receive {formatAtomic(record.outputAmount, record.outputAsset)} {record.outputAsset}</p>}</div></div>
+        return <article key={record.id} className="rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-slate-300 hover:shadow-sm sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-600">{record.kind}</span><span className="rounded-full bg-orange-50 px-2.5 py-1 text-[10px] font-semibold capitalize text-orange-800">{record.status.replaceAll("_", " ")}</span></div><b className="mt-2 block text-base text-slate-950">{record.title}</b><p className="mt-1 text-sm text-slate-500">{new Date(record.date).toLocaleString()} <span className="mx-1">·</span> {record.counterparty}{record.counterpartyEmail ? ` (${record.counterpartyEmail})` : ""}</p></div><div className="min-w-[180px] rounded-xl bg-slate-50 px-4 py-3 text-left sm:text-right">{record.requestedAmount && <p className="text-sm font-semibold text-slate-950">{record.requestedAmount} {record.requestedAsset} requested</p>}{record.sourceAsset && <p className="mt-1 text-xs text-slate-600">Paid from {record.sourceAmount ? `${formatAtomic(record.sourceAmount, record.sourceAsset)} ` : ""}{record.sourceAsset}</p>}{record.outputAsset && record.outputAmount && <p className="mt-1 text-xs font-semibold text-emerald-800">Will receive {formatAtomic(record.outputAmount, record.outputAsset)} {record.outputAssetLabel ?? payrollAssetLabel(record.outputAsset)}</p>}</div></div>
           <div className="mt-3 grid gap-3 rounded-xl bg-slate-50 p-3 text-xs sm:grid-cols-2"><div><p className="font-semibold text-slate-500">Paid to / receiving destination</p><code className="mt-1 block break-all text-slate-700">{record.destinationAddress || "Not recorded"}</code>{record.networkFeeAtomic && <p className="mt-2 text-slate-600">BCH network fee: {formatAtomic(record.networkFeeAtomic, "BCH")} BCH</p>}</div><div><p className="font-semibold text-slate-500">Transaction</p>{record.txid ? <code className="mt-1 block break-all text-slate-700">{record.txid}</code> : <p className="mt-1 text-slate-500">Not broadcast</p>}{record.sourceTxid && record.sourceTxid !== record.txid && <><p className="mt-2 font-semibold text-slate-500">Source transaction</p><code className="mt-1 block break-all text-slate-700">{record.sourceTxid}</code></>}</div></div>
           {record.txid && record.destinationAddress && record.outputAsset && record.outputAmount && <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3"><span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${reconciliationTone}`}>{reconciliationLabel}</span>{record.outputAsset !== "XLM" && record.outputAsset !== "USDC" && record.outputAsset !== "USDT" && <Button size="sm" variant="outline" disabled={reconcilingId === record.id} onClick={() => void reconcile(record)}>{reconcilingId === record.id ? "Checking chain…" : reconciliation[record.id] === "matched" ? "Check again" : "Reconcile payment"}</Button>}</div>}
           {sourceTxid && <div className="mt-2"><Button size="sm" variant="outline" disabled={loadingTxid === sourceTxid} onClick={() => void openSources(sourceTxid, record.sourceNetwork)}>{loaded ? "Hide payer input addresses" : loadingTxid === sourceTxid ? "Checking transaction inputs…" : "Show payer input addresses"}</Button>{loaded && <div className="mt-2 grid gap-2 sm:grid-cols-2">{loaded.map((source) => <div key={source.outpoint} className="rounded-lg border border-slate-200 p-3"><p className="text-[11px] font-semibold text-slate-500">Input · {source.asset} · {source.outpoint.slice(0, 16)}…</p><code className="mt-1 block break-all text-xs text-slate-700">{source.address || "Script / address could not be resolved"}</code>{source.tokenAmount && <p className="mt-1 text-[11px] text-slate-500">Token amount {source.tokenAmount}</p>}</div>)}</div>}</div>}
@@ -197,7 +205,7 @@ export function FinancialRecords({ isOrganization = false }: { isOrganization?: 
 }
 
 function formatAtomic(value: string, asset: Asset | string) {
-  const decimals = asset === "BCH" ? 8 : asset === "XLM" || asset === "USDC" ? 7 : 2;
+  const decimals = asset === "BCH" ? 8 : asset === "XLM" || asset === "USDC" ? 7 : ["BSUSDC", "ARUSDC", "BMUSDC", "AMUSDC"].includes(asset) ? 6 : 2;
   try { const amount = BigInt(value); const scale = 10n ** BigInt(decimals); const fraction = (amount % scale).toString().padStart(decimals, "0").replace(/0+$/, ""); return fraction ? `${amount / scale}.${fraction}` : (amount / scale).toString(); }
   catch { return value; }
 }

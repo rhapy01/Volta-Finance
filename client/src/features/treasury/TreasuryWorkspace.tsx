@@ -2,16 +2,17 @@ import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
+import type { NetworkMode } from "@/lib/networkMode";
 
 const purposes = ["tax", "savings", "payroll", "operating"] as const;
 type Asset = "BCH" | "PUSD" | "MUSD";
 type Plan = { allocations: Record<(typeof purposes)[number], number>; reserveGoal: { amount: string; asset: Asset; targetDate: string | null } | null; recurringPlan: { purpose: (typeof purposes)[number]; amount: string; asset: Asset; cadence: "weekly" | "monthly" } | null };
 const initialPlan: Plan = { allocations: { tax: 0, savings: 0, payroll: 0, operating: 0 }, reserveGoal: null, recurringPlan: null };
 
-export function TreasuryWorkspace({ isOrganization, onSwitchPersonal }: { isOrganization: boolean; onSwitchPersonal: () => void }) {
+export function TreasuryWorkspace({ isOrganization, onSwitchPersonal, networkMode = "mainnet" }: { isOrganization: boolean; onSwitchPersonal: () => void; networkMode?: NetworkMode }) {
   const utils = trpc.useUtils();
   const planQuery = trpc.finance.treasuryPlan.useQuery(undefined, { enabled: !isOrganization, retry: false });
-  const activity = trpc.finance.treasuryActivity.useQuery(undefined, { enabled: !isOrganization, retry: false });
+  const activity = trpc.finance.treasuryActivity.useQuery({ view: networkMode === "mainnet" ? "mainnet" : "testnet_archive" }, { enabled: !isOrganization, retry: false });
   const savePlan = trpc.finance.saveTreasuryPlan.useMutation({ onSuccess: async () => { await utils.finance.treasuryPlan.invalidate(); await utils.finance.treasuryActivity.invalidate(); toast.success("Treasury plan saved"); }, onError: (error) => toast.error("Plan not saved", { description: error.message }) });
   const [plan, setPlan] = useState<Plan>(initialPlan);
   const [reserveEnabled, setReserveEnabled] = useState(false);

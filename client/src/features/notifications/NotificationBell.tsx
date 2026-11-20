@@ -4,10 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { trpc } from "@/lib/trpc";
 
-export function NotificationBell() {
+export function NotificationBell({ view = "mainnet" }: { view?: "mainnet" | "testnet_archive" }) {
   const [, setLocation] = useLocation();
   const utils = trpc.useUtils();
-  const notificationsQuery = trpc.notifications.list.useQuery(undefined, {
+  const notificationsQuery = trpc.notifications.list.useQuery({ view }, {
     refetchInterval: 30_000,
   });
   const markRead = trpc.notifications.markRead.useMutation({

@@ -1,28 +1,51 @@
-import { and, desc, eq, gt, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { Pool } from "pg";
 import { cashAddressToLockingBytecode } from "@bitauth/libauth";
 import * as schema from "../drizzle/schema";
-import { type Asset, type PayrollAsset, type PaymentDestinationAsset, type TreasuryPlanConfiguration, auditEvents, blockchainTransactions, crosschainIntents, employees, invoices, ledgerEntries, notifications, paymentDestinations, paymentIntents, payrollItems, payrollRuns, payslips, stellarDestinations, treasuryPlans, users, userSessions, userWorkspacePreferences, wallets, workspaceInvites, workspaceMembers, workspaces } from "../drizzle/schema";
+import { type Asset, type PayrollAsset, type PaymentDestinationAsset, type StellarReceiveNetwork, type TreasuryPlanConfiguration, auditEvents, blockchainTransactions, crosschainIntents, evmDestinations, employees, invoices, ledgerEntries, notifications, passwordResetTokens, paymentDestinations, paymentIntents, payrollItems, payrollRuns, payslips, stellarDestinations, systemSettings, treasuryPlans, users, userSessions, userWorkspacePreferences, wallets, workspaceInvites, workspaceMembers, workspaces } from "../drizzle/schema";
 import { nanoid } from "nanoid";
 import { formatAtomicAmount } from "./integrations/cauldron";
 import { formatStellarXlmAtomic } from "./integrations/stellar";
+import { evmPayrollRouteForMode, parseEvmPayrollRoute } from "./integrations/evmNetworks";
 
 type AppDatabase = ReturnType<typeof drizzle<typeof schema>>;
 let _db: AppDatabase | null = null;
 let _pool: Pool | null = null;
+let _mainnetCutoverAt: Date | null = null;
 
-export async function createNotification(input: { recipientUserId: number; workspaceId?: number | null; category: "invoice" | "payment" | "payroll" | "team" | "system"; title: string; body: string; href?: string; entityType?: string; entityId?: string }) {
-  const db = await getDb();
-  if (!db) return;
-  await db.insert(notifications).values({ ...input, workspaceId: input.workspaceId ?? null, href: input.href ?? null, entityType: input.entityType ?? null, entityId: input.entityId ?? null });
-}
+export type WorkspaceDataView = "mainnet" | "testnet_archive";
 
-export async function listNotificationsForUser(userId: number) {
+async function getMainnetCutoverAt() {
+  if (_mainnetCutoverAt) return _mainnetCutoverAt;
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
-  const rows = await db.select().from(notifications).where(eq(notifications.recipientUserId, userId)).orderBy(desc(notifications.createdAt)).limit(50);
-  const [unread] = await db.select({ count: sql<number>`count(*)::int` }).from(notifications).where(and(eq(notifications.recipientUserId, userId), isNull(notifications.readAt)));
+  const [setting] = await db.select({ value: systemSettings.value }).from(systemSettings).where(eq(systemSettings.key, "mainnet_cutover_at")).limit(1);
+  const value = setting?.value ? new Date(setting.value) : null;
+  if (!value || Number.isNaN(value.getTime())) throw new Error("Mainnet archive cutover is not configured");
+  _mainnetCutoverAt = value;
+  return value;
+}
+
+async function dataViewCondition(column: AnyPgColumn, view: WorkspaceDataView) {
+  await getMainnetCutoverAt();
+  const dataNetwork = view === "mainnet" ? "mainnet" : "testnet";
+  return sql`${column} = ${dataNetwork}`;
+}
+
+export async function createNotification(input: { recipientUserId: number; workspaceId?: number | null; category: "invoice" | "payment" | "payroll" | "team" | "system"; title: string; body: string; href?: string; entityType?: string; entityId?: string; dataNetwork?: "mainnet" | "testnet" }) {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(notifications).values({ ...input, workspaceId: input.workspaceId ?? null, href: input.href ?? null, entityType: input.entityType ?? null, entityId: input.entityId ?? null, dataNetwork: input.dataNetwork ?? "mainnet" });
+}
+
+export async function listNotificationsForUser(userId: number, view: WorkspaceDataView = "mainnet") {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const viewCondition = await dataViewCondition(notifications.dataNetwork, view);
+  const rows = await db.select().from(notifications).where(and(eq(notifications.recipientUserId, userId), viewCondition)).orderBy(desc(notifications.createdAt)).limit(50);
+  const [unread] = await db.select({ count: sql<number>`count(*)::int` }).from(notifications).where(and(eq(notifications.recipientUserId, userId), isNull(notifications.readAt), viewCondition));
   return { items: rows, unreadCount: unread?.count ?? 0 };
 }
 
@@ -101,6 +124,43 @@ export async function deleteUserSession(tokenHash: string) {
   const db = await getDb();
   if (!db) throw new Error("Database is not available. Set DATABASE_URL to a Neon PostgreSQL connection string.");
   await db.delete(userSessions).where(eq(userSessions.tokenHash, tokenHash));
+}
+
+export async function createPasswordResetToken(input: { userId: number; tokenHash: string; expiresAt: Date }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  return db.transaction(async (tx) => {
+    const now = new Date();
+    const [latest] = await tx.select({ createdAt: passwordResetTokens.createdAt }).from(passwordResetTokens)
+      .where(and(eq(passwordResetTokens.userId, input.userId), gt(passwordResetTokens.expiresAt, now)))
+      .orderBy(desc(passwordResetTokens.createdAt)).limit(1);
+    if (latest && now.getTime() - latest.createdAt.getTime() < 60_000) return false;
+    await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, input.userId));
+    await tx.insert(passwordResetTokens).values(input);
+    return true;
+  });
+}
+
+export async function completePasswordReset(input: { tokenHash: string; passwordHash: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  return db.transaction(async (tx) => {
+    const now = new Date();
+    const [token] = await tx.delete(passwordResetTokens)
+      .where(and(eq(passwordResetTokens.tokenHash, input.tokenHash), gt(passwordResetTokens.expiresAt, now)))
+      .returning({ userId: passwordResetTokens.userId });
+    if (!token) return false;
+    await tx.update(users).set({ passwordHash: input.passwordHash, updatedAt: now }).where(eq(users.id, token.userId));
+    await tx.delete(userSessions).where(eq(userSessions.userId, token.userId));
+    await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, token.userId));
+    return true;
+  });
+}
+
+export async function revokePasswordResetTokens(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, userId));
 }
 
 export async function getOrCreateWorkspaceForUser(userId: number) {
@@ -302,19 +362,19 @@ export async function getPersonalPayrollDestination(input: { email: string; asse
     ? bchTyped.length ? bchTyped : destinations
     : tokenTyped.length ? tokenTyped : tokenCapable;
   if (input.network) return candidates.find((destination) => destination.isDefault) ?? candidates[0];
-  for (const network of ["chipnet", "mainnet"] as const) {
+  for (const network of ["mainnet", "chipnet"] as const) {
     const onNetwork = candidates.filter((destination) => destination.network === network);
     if (onNetwork.length) return onNetwork.find((destination) => destination.isDefault) ?? onNetwork[0];
   }
   return candidates.find((destination) => destination.isDefault) ?? candidates[0];
 }
 
-export async function getPersonalStellarDestination(input: { email: string }) {
+export async function getPersonalStellarDestination(input: { email: string; network?: StellarReceiveNetwork }) {
   const db = await getDb();
   if (!db) throw new Error("Database is not available. Set DATABASE_URL to a Neon PostgreSQL connection string.");
   const [user] = await db.select({ id: users.id }).from(users).where(sql`lower(${users.email}) = ${input.email.trim().toLowerCase()}`).limit(1);
   if (!user) return undefined;
-  const [destination] = await db.select().from(stellarDestinations).where(eq(stellarDestinations.userId, user.id)).orderBy(desc(stellarDestinations.isDefault), desc(stellarDestinations.createdAt)).limit(1);
+  const [destination] = await db.select().from(stellarDestinations).where(and(eq(stellarDestinations.userId, user.id), ...(input.network ? [eq(stellarDestinations.network, input.network)] : []))).orderBy(desc(stellarDestinations.isDefault), desc(stellarDestinations.createdAt)).limit(1);
   return destination;
 }
 
@@ -385,14 +445,14 @@ export async function getStellarDestinationForUser(input: { userId: number; dest
   return destination;
 }
 
-export async function addStellarDestination(input: { userId: number; label: string; address: string; makeDefault: boolean }) {
+export async function addStellarDestination(input: { userId: number; label: string; address: string; network: StellarReceiveNetwork; makeDefault: boolean }) {
   const db = await getDb();
   if (!db) throw new Error("Database is not available. Set DATABASE_URL to a Neon PostgreSQL connection string.");
   const destination = await db.transaction(async (tx) => {
-    const [existing] = await tx.select().from(stellarDestinations).where(and(eq(stellarDestinations.userId, input.userId), eq(stellarDestinations.address, input.address))).limit(1);
-    if (input.makeDefault) await tx.update(stellarDestinations).set({ isDefault: false, updatedAt: new Date() }).where(eq(stellarDestinations.userId, input.userId));
+    const [existing] = await tx.select().from(stellarDestinations).where(and(eq(stellarDestinations.userId, input.userId), eq(stellarDestinations.network, input.network), eq(stellarDestinations.address, input.address))).limit(1);
+    if (input.makeDefault) await tx.update(stellarDestinations).set({ isDefault: false, updatedAt: new Date() }).where(and(eq(stellarDestinations.userId, input.userId), eq(stellarDestinations.network, input.network)));
     if (existing) {
-      const [updated] = await tx.update(stellarDestinations).set({ label: input.label, isDefault: input.makeDefault || existing.isDefault, updatedAt: new Date() }).where(eq(stellarDestinations.id, existing.id)).returning();
+      const [updated] = await tx.update(stellarDestinations).set({ label: input.label, isDefault: input.makeDefault || existing.isDefault, isArchived: false, updatedAt: new Date() }).where(eq(stellarDestinations.id, existing.id)).returning();
       if (!updated) throw new Error("Stellar address could not be updated");
       return updated;
     }
@@ -400,7 +460,7 @@ export async function addStellarDestination(input: { userId: number; label: stri
     if (!created) throw new Error("Stellar address could not be saved");
     return created;
   });
-  if (input.makeDefault) {
+  if (input.makeDefault && input.network === "stellar-testnet") {
     const [user] = await db.select({ email: users.email }).from(users).where(eq(users.id, input.userId)).limit(1);
     if (user?.email) await db.update(employees).set({ preferredAsset: "XLM", updatedAt: new Date() }).where(and(sql`lower(${employees.email}) = ${user.email.trim().toLowerCase()}`, eq(employees.active, 1)));
   }
@@ -411,12 +471,14 @@ export async function setDefaultStellarDestination(input: { userId: number; dest
   const db = await getDb();
   if (!db) throw new Error("Database is not available. Set DATABASE_URL to a Neon PostgreSQL connection string.");
   return db.transaction(async (tx) => {
-    const [target] = await tx.select({ id: stellarDestinations.id }).from(stellarDestinations).where(and(eq(stellarDestinations.userId, input.userId), eq(stellarDestinations.id, input.destinationId))).limit(1);
+    const [target] = await tx.select({ id: stellarDestinations.id, network: stellarDestinations.network }).from(stellarDestinations).where(and(eq(stellarDestinations.userId, input.userId), eq(stellarDestinations.id, input.destinationId))).limit(1);
     if (!target) return false;
-    await tx.update(stellarDestinations).set({ isDefault: false, updatedAt: new Date() }).where(eq(stellarDestinations.userId, input.userId));
-    await tx.update(stellarDestinations).set({ isDefault: true, updatedAt: new Date() }).where(eq(stellarDestinations.id, target.id));
-    const [user] = await tx.select({ email: users.email }).from(users).where(eq(users.id, input.userId)).limit(1);
-    if (user?.email) await tx.update(employees).set({ preferredAsset: "XLM", updatedAt: new Date() }).where(and(sql`lower(${employees.email}) = ${user.email.trim().toLowerCase()}`, eq(employees.active, 1)));
+    await tx.update(stellarDestinations).set({ isDefault: false, updatedAt: new Date() }).where(and(eq(stellarDestinations.userId, input.userId), eq(stellarDestinations.network, target.network)));
+    await tx.update(stellarDestinations).set({ isDefault: true, isArchived: false, updatedAt: new Date() }).where(eq(stellarDestinations.id, target.id));
+    if (target.network === "stellar-testnet") {
+      const [user] = await tx.select({ email: users.email }).from(users).where(eq(users.id, input.userId)).limit(1);
+      if (user?.email) await tx.update(employees).set({ preferredAsset: "XLM", updatedAt: new Date() }).where(and(sql`lower(${employees.email}) = ${user.email.trim().toLowerCase()}`, eq(employees.active, 1)));
+    }
     return true;
   });
 }
@@ -428,9 +490,10 @@ export async function deleteStellarDestination(input: { userId: number; destinat
   return Boolean(deleted);
 }
 
-export async function listTreasuryActivity(workspaceId: number) {
+export async function listTreasuryActivity(workspaceId: number, view: WorkspaceDataView = "mainnet") {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
+  const viewCondition = await dataViewCondition(ledgerEntries.dataNetwork, view);
   const rows = await db.select({
     id: ledgerEntries.id,
     invoiceId: ledgerEntries.invoiceId,
@@ -446,7 +509,7 @@ export async function listTreasuryActivity(workspaceId: number) {
     clientName: invoices.clientName,
   }).from(ledgerEntries)
     .leftJoin(invoices, eq(ledgerEntries.invoiceId, invoices.id))
-    .where(and(eq(ledgerEntries.workspaceId, workspaceId), eq(ledgerEntries.state, "posted"), eq(ledgerEntries.account, "cash")))
+    .where(and(eq(ledgerEntries.workspaceId, workspaceId), eq(ledgerEntries.state, "posted"), eq(ledgerEntries.account, "cash"), viewCondition))
     .orderBy(desc(ledgerEntries.createdAt));
 
   const totals = { BCH: { received: 0n, sent: 0n }, PUSD: { received: 0n, sent: 0n }, MUSD: { received: 0n, sent: 0n } };
@@ -483,23 +546,27 @@ export async function saveTreasuryPlan(input: { workspaceId: number; userId: num
   return input.configuration;
 }
 
-export async function listInvoicesForWorkspace(workspaceId: number) {
+export async function listInvoicesForWorkspace(workspaceId: number, view: WorkspaceDataView = "mainnet") {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
-  return db.select().from(invoices).where(and(eq(invoices.workspaceId, workspaceId), eq(invoices.direction, "receivable"))).orderBy(desc(invoices.createdAt));
+  const viewCondition = await dataViewCondition(invoices.dataNetwork, view);
+  return db.select().from(invoices).where(and(eq(invoices.workspaceId, workspaceId), eq(invoices.direction, "receivable"), viewCondition)).orderBy(desc(invoices.createdAt));
 }
 
-export async function getWorkspacePaymentMetrics(workspaceId: number) {
+export async function getWorkspacePaymentMetrics(workspaceId: number, view: WorkspaceDataView = "mainnet") {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
+  const invoiceView = await dataViewCondition(invoices.dataNetwork, view);
+  const intentView = await dataViewCondition(paymentIntents.dataNetwork, view);
+  const crosschainView = await dataViewCondition(crosschainIntents.dataNetwork, view);
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const routesFreshSince = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   const [workspaceInvoices, paidInvoicesThisMonth, paymentRoutes, crosschainRoutes] = await Promise.all([
-    db.select({ status: invoices.status }).from(invoices).where(and(or(eq(invoices.workspaceId, workspaceId), eq(invoices.recipientWorkspaceId, workspaceId)), inArray(invoices.status, ["draft", "submitted", "awaiting_payment", "awaiting_verification"]))),
-    db.select({ id: invoices.id, requestAsset: invoices.requestAsset, displayAmount: invoices.displayAmount }).from(invoices).where(and(eq(invoices.workspaceId, workspaceId), eq(invoices.direction, "receivable"), eq(invoices.status, "paid"), gte(invoices.updatedAt, monthStart))),
-    db.select({ id: paymentIntents.id }).from(paymentIntents).where(and(eq(paymentIntents.workspaceId, workspaceId), inArray(paymentIntents.status, ["awaiting_signature", "broadcast", "pending_verification"]), gte(paymentIntents.updatedAt, routesFreshSince))),
-    db.select({ id: crosschainIntents.id }).from(crosschainIntents).where(and(eq(crosschainIntents.workspaceId, workspaceId), inArray(crosschainIntents.status, ["pending_verification", "paying"]), gte(crosschainIntents.updatedAt, routesFreshSince), gt(crosschainIntents.expiresAt, now))),
+    db.select({ status: invoices.status }).from(invoices).where(and(or(eq(invoices.workspaceId, workspaceId), eq(invoices.recipientWorkspaceId, workspaceId)), inArray(invoices.status, ["draft", "submitted", "awaiting_payment", "awaiting_verification"]), invoiceView)),
+    db.select({ id: invoices.id, requestAsset: invoices.requestAsset, displayAmount: invoices.displayAmount }).from(invoices).where(and(eq(invoices.workspaceId, workspaceId), eq(invoices.direction, "receivable"), eq(invoices.status, "paid"), gte(invoices.updatedAt, monthStart), invoiceView)),
+    db.select({ id: paymentIntents.id }).from(paymentIntents).where(and(eq(paymentIntents.workspaceId, workspaceId), inArray(paymentIntents.status, ["awaiting_signature", "broadcast", "pending_verification"]), gte(paymentIntents.updatedAt, routesFreshSince), intentView)),
+    db.select({ id: crosschainIntents.id }).from(crosschainIntents).where(and(eq(crosschainIntents.workspaceId, workspaceId), inArray(crosschainIntents.status, ["pending_verification", "paying"]), gte(crosschainIntents.updatedAt, routesFreshSince), gt(crosschainIntents.expiresAt, now), crosschainView)),
   ]);
   const usdtReceivedCents = paidInvoicesThisMonth.reduce((sum, invoice) => {
     if (invoice.requestAsset !== "USDT") return sum;
@@ -515,7 +582,7 @@ export async function getWorkspacePaymentMetrics(workspaceId: number) {
 }
 
 /** A workspace-scoped accounting view assembled from posted journal entries and source records. */
-export async function getFinancialRecordsForWorkspace(workspaceId: number, userEmail?: string) {
+export async function getFinancialRecordsForWorkspace(workspaceId: number, userEmail?: string, view: WorkspaceDataView = "mainnet") {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
   const [currentWorkspace] = await db.select({ type: workspaces.type }).from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
@@ -523,14 +590,19 @@ export async function getFinancialRecordsForWorkspace(workspaceId: number, userE
   const payrollScope = includePersonalPayroll
     ? or(eq(payrollRuns.workspaceId, workspaceId), and(sql`lower(${employees.email}) = ${userEmail!.trim().toLowerCase()}`, inArray(payrollItems.status, ["verified", "broadcast"])))
     : eq(payrollRuns.workspaceId, workspaceId);
+  const journalView = await dataViewCondition(ledgerEntries.dataNetwork, view);
+  const invoiceView = await dataViewCondition(invoices.dataNetwork, view);
+  const intentView = await dataViewCondition(paymentIntents.dataNetwork, view);
+  const crosschainView = await dataViewCondition(crosschainIntents.dataNetwork, view);
+  const payrollView = await dataViewCondition(payrollRuns.dataNetwork, view);
   const [journal, invoiceRecords, intentRecords, crosschainRecords, payrollRecords] = await Promise.all([
     db.select({ id: ledgerEntries.id, invoiceId: ledgerEntries.invoiceId, asset: ledgerEntries.asset, amountAtomic: ledgerEntries.amountAtomic, direction: ledgerEntries.direction, state: ledgerEntries.state, txid: ledgerEntries.externalTxid, account: ledgerEntries.account, createdAt: ledgerEntries.createdAt, invoicePublicId: invoices.publicId, description: invoices.description, clientName: invoices.clientName, senderName: invoices.senderName, senderEmail: invoices.senderEmail, recipientEmail: invoices.recipientEmail, receivingAddress: invoices.receivingAddress, requestAsset: invoices.requestAsset, invoiceAmountAtomic: invoices.amountAtomic, invoiceDisplayAmount: invoices.displayAmount, receivedAmountAtomic: invoices.receivedAmountAtomic, deliveryAsset: invoices.deliveryAsset, deliveryNetwork: invoices.deliveryNetwork })
-      .from(ledgerEntries).leftJoin(invoices, eq(ledgerEntries.invoiceId, invoices.id)).where(eq(ledgerEntries.workspaceId, workspaceId)).orderBy(desc(ledgerEntries.createdAt)).limit(500),
-    db.select().from(invoices).where(or(eq(invoices.workspaceId, workspaceId), eq(invoices.recipientWorkspaceId, workspaceId))).orderBy(desc(invoices.createdAt)).limit(200),
-    db.select().from(paymentIntents).where(eq(paymentIntents.workspaceId, workspaceId)).orderBy(desc(paymentIntents.createdAt)).limit(200),
-    db.select().from(crosschainIntents).where(eq(crosschainIntents.workspaceId, workspaceId)).orderBy(desc(crosschainIntents.createdAt)).limit(200),
+      .from(ledgerEntries).leftJoin(invoices, eq(ledgerEntries.invoiceId, invoices.id)).where(and(eq(ledgerEntries.workspaceId, workspaceId), journalView)).orderBy(desc(ledgerEntries.createdAt)).limit(500),
+    db.select().from(invoices).where(and(or(eq(invoices.workspaceId, workspaceId), eq(invoices.recipientWorkspaceId, workspaceId)), invoiceView)).orderBy(desc(invoices.createdAt)).limit(200),
+    db.select().from(paymentIntents).where(and(eq(paymentIntents.workspaceId, workspaceId), intentView)).orderBy(desc(paymentIntents.createdAt)).limit(200),
+    db.select().from(crosschainIntents).where(and(eq(crosschainIntents.workspaceId, workspaceId), crosschainView)).orderBy(desc(crosschainIntents.createdAt)).limit(200),
     db.select({ id: payrollItems.id, workspaceId: payrollItems.workspaceId, runId: payrollItems.runId, employeeId: payrollItems.employeeId, payoutAddress: payrollItems.payoutAddress, amountAtomic: payrollItems.amountAtomic, requestedAmountAtomic: payrollItems.requestedAmountAtomic, displayAmount: payrollItems.displayAmount, requestedAmountUnit: payrollItems.requestedAmountUnit, asset: payrollItems.asset, status: payrollItems.status, txid: payrollItems.txid, failureReason: payrollItems.failureReason, createdAt: payrollItems.createdAt, updatedAt: payrollItems.updatedAt, period: payrollRuns.period, runPublicId: payrollRuns.publicId, sourceAsset: payrollRuns.sourceAsset, runStatus: payrollRuns.status, employeeName: employees.fullName, employeeEmail: employees.email, organizationName: workspaces.name })
-      .from(payrollItems).innerJoin(payrollRuns, and(eq(payrollItems.runId, payrollRuns.id), eq(payrollItems.workspaceId, payrollRuns.workspaceId))).innerJoin(employees, and(eq(payrollItems.employeeId, employees.id), eq(payrollItems.workspaceId, employees.workspaceId))).innerJoin(workspaces, eq(payrollRuns.workspaceId, workspaces.id)).where(payrollScope).orderBy(desc(payrollItems.createdAt)).limit(500),
+      .from(payrollItems).innerJoin(payrollRuns, and(eq(payrollItems.runId, payrollRuns.id), eq(payrollItems.workspaceId, payrollRuns.workspaceId))).innerJoin(employees, and(eq(payrollItems.employeeId, employees.id), eq(payrollItems.workspaceId, employees.workspaceId))).innerJoin(workspaces, eq(payrollRuns.workspaceId, workspaces.id)).where(and(payrollScope, payrollView)).orderBy(desc(payrollItems.createdAt)).limit(500),
   ]);
   const transactionIds = [...new Set([...journal.map((entry) => entry.txid), ...invoiceRecords.map((invoice) => invoice.paymentTxid)].filter((txid): txid is string => Boolean(txid)))];
   const transactionIntents = await listPaymentIntentSummariesForTransactions(transactionIds);
@@ -560,6 +632,8 @@ export async function getFinancialRecordsForWorkspace(workspaceId: number, userE
       if (invoice.deliveryAsset === "XLM") {
         const received = typeof settlement?.destinationAmountAtomic === "string" ? settlement.destinationAmountAtomic : invoice.receivedAmountAtomic;
         if (received) balances.XLM.receivedAtomic += BigInt(received);
+      } else if (invoice.deliveryNetwork === "base-sepolia" || invoice.deliveryNetwork === "arc-testnet" || invoice.deliveryNetwork === "base-mainnet" || invoice.deliveryNetwork === "arc-mainnet") {
+        // EVM assets are recorded on their own chain, outside the BCH asset balances.
       } else {
         const amount = invoice.receivedAmountAtomic || invoice.amountAtomic;
         balances[invoice.asset].receivedAtomic += BigInt(amount);
@@ -567,6 +641,12 @@ export async function getFinancialRecordsForWorkspace(workspaceId: number, userE
     } else if (isPayer) {
       // A cross-chain invoice's source spend is captured from the intent below.
       if (invoice.deliveryAsset === "XLM") continue;
+      if (invoice.deliveryNetwork === "base-sepolia" || invoice.deliveryNetwork === "arc-testnet" || invoice.deliveryNetwork === "base-mainnet" || invoice.deliveryNetwork === "arc-mainnet") {
+        const sourceAsset = settlement?.sourceAsset;
+        const sourceAmountAtomic = settlement?.sourceAmountAtomic;
+        if ((sourceAsset === "BCH" || sourceAsset === "PUSD") && typeof sourceAmountAtomic === "string") balances[sourceAsset].spentAtomic += BigInt(sourceAmountAtomic);
+        continue;
+      }
       const sourceTxid = typeof settlement?.sourceTxid === "string" ? settlement.sourceTxid : invoice.paymentTxid;
       const sourceIntent = transactionIntents.find((intent) => intent.txid === sourceTxid);
       if (sourceIntent) balances[sourceIntent.payerAsset].spentAtomic += BigInt(sourceIntent.inputAmountAtomic);
@@ -579,7 +659,7 @@ export async function getFinancialRecordsForWorkspace(workspaceId: number, userE
   if (includePersonalPayroll) {
     for (const item of payrollRecords) {
       if (item.workspaceId !== workspaceId && item.employeeEmail?.trim().toLowerCase() === userEmail!.trim().toLowerCase() && item.status === "verified") {
-        balances[item.asset].receivedAtomic += BigInt(item.amountAtomic);
+        if (item.asset === "BCH" || item.asset === "PUSD" || item.asset === "MUSD" || item.asset === "XLM" || item.asset === "USDC") balances[item.asset].receivedAtomic += BigInt(item.amountAtomic);
       }
     }
   }
@@ -588,10 +668,11 @@ export async function getFinancialRecordsForWorkspace(workspaceId: number, userE
   return { workspaceId, balances: balanceSummary, journal, invoices: invoiceRecords, intents: intentRecords, transactionIntents, crosschain: crosschainRecords, payroll: payrollWithRecipientScope };
 }
 
-export async function listInvoiceInboxForUser(input: { workspaceId: number; userId: number }) {
+export async function listInvoiceInboxForUser(input: { workspaceId: number; userId: number; view?: WorkspaceDataView }) {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
-  return db.select().from(invoices).where(eq(invoices.recipientWorkspaceId, input.workspaceId)).orderBy(desc(invoices.createdAt));
+  const viewCondition = await dataViewCondition(invoices.dataNetwork, input.view ?? "mainnet");
+  return db.select().from(invoices).where(and(eq(invoices.recipientWorkspaceId, input.workspaceId), viewCondition)).orderBy(desc(invoices.createdAt));
 }
 
 export async function listPaymentIntentSummariesForTransactions(txids: string[]) {
@@ -627,10 +708,11 @@ export async function createInvoiceForWorkspace(input: {
   displayAmount: string;
   requestAsset: "USDT" | "BCH" | "PUSD" | "MUSD";
   asset: "BCH" | "PUSD" | "MUSD";
-  deliveryAsset?: "XLM" | null;
-  deliveryNetwork?: "stellar-testnet" | null;
+  deliveryAsset?: "XLM" | "USDC" | "ETH" | null;
+  deliveryNetwork?: "stellar-testnet" | "base-sepolia" | "arc-testnet" | "base-mainnet" | "arc-mainnet" | null;
   dueDate: string;
   receivingAddress?: string;
+  dataNetwork?: "mainnet" | "testnet";
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
@@ -652,6 +734,7 @@ export async function createInvoiceForWorkspace(input: {
     deliveryNetwork: input.deliveryNetwork ?? null,
     dueDate: input.dueDate,
     receivingAddress: input.receivingAddress || null,
+    dataNetwork: input.dataNetwork ?? "mainnet",
     status: "draft",
   }).returning({ id: invoices.id });
   await db.insert(auditEvents).values({
@@ -678,8 +761,8 @@ export async function updateDraftInvoiceForWorkspace(input: {
   displayAmount: string;
   requestAsset: "USDT";
   asset: "BCH" | "PUSD" | "MUSD";
-  deliveryAsset?: "XLM" | null;
-  deliveryNetwork?: "stellar-testnet" | null;
+  deliveryAsset?: "XLM" | "USDC" | "ETH" | null;
+  deliveryNetwork?: "stellar-testnet" | "base-sepolia" | "arc-testnet" | "base-mainnet" | "arc-mainnet" | null;
   dueDate: string;
   receivingAddress: string;
 }) {
@@ -750,22 +833,22 @@ export async function finalizeInvoiceBatch(input: { payerWorkspaceId: number; pa
       }
       if (current.direction === "receivable") {
         await tx.insert(ledgerEntries).values([
-          { workspaceId: current.workspaceId, invoiceId: current.id, asset: current.asset, amountAtomic: current.receivedAmountAtomic || current.amountAtomic, direction: "debit", state: "posted", externalTxid: input.txid, account: "cash" },
-          { workspaceId: current.workspaceId, invoiceId: current.id, asset: current.asset, amountAtomic: current.receivedAmountAtomic || current.amountAtomic, direction: "credit", state: "posted", externalTxid: input.txid, account: "accounts.receivable" },
+          { workspaceId: current.workspaceId, invoiceId: current.id, asset: current.asset, amountAtomic: current.receivedAmountAtomic || current.amountAtomic, direction: "debit", state: "posted", externalTxid: input.txid, account: "cash", dataNetwork: current.dataNetwork },
+          { workspaceId: current.workspaceId, invoiceId: current.id, asset: current.asset, amountAtomic: current.receivedAmountAtomic || current.amountAtomic, direction: "credit", state: "posted", externalTxid: input.txid, account: "accounts.receivable", dataNetwork: current.dataNetwork },
         ]);
       } else {
         await tx.insert(ledgerEntries).values([
-          { workspaceId: current.workspaceId, invoiceId: current.id, asset: requestedLedgerAsset, amountAtomic: current.amountAtomic, direction: "debit", state: "posted", externalTxid: input.txid, account: "accounts.payable" },
-          { workspaceId: current.workspaceId, invoiceId: current.id, asset: current.asset, amountAtomic: current.receivedAmountAtomic || current.amountAtomic, direction: "credit", state: "posted", externalTxid: input.txid, account: "cash" },
+          { workspaceId: current.workspaceId, invoiceId: current.id, asset: requestedLedgerAsset, amountAtomic: current.amountAtomic, direction: "debit", state: "posted", externalTxid: input.txid, account: "accounts.payable", dataNetwork: current.dataNetwork },
+          { workspaceId: current.workspaceId, invoiceId: current.id, asset: current.asset, amountAtomic: current.receivedAmountAtomic || current.amountAtomic, direction: "credit", state: "posted", externalTxid: input.txid, account: "cash", dataNetwork: current.dataNetwork },
         ]);
       }
       if (current.direction === "receivable" && current.workspaceId !== input.payerWorkspaceId) await tx.insert(ledgerEntries).values([
-        { workspaceId: input.payerWorkspaceId, invoiceId: current.id, asset: requestedLedgerAsset, amountAtomic: current.amountAtomic, direction: "debit", state: "posted", externalTxid: input.txid, account: "invoice.expense" },
-        { workspaceId: input.payerWorkspaceId, invoiceId: current.id, asset: current.asset, amountAtomic: current.receivedAmountAtomic || current.amountAtomic, direction: "credit", state: "posted", externalTxid: input.txid, account: "cash" },
+        { workspaceId: input.payerWorkspaceId, invoiceId: current.id, asset: requestedLedgerAsset, amountAtomic: current.amountAtomic, direction: "debit", state: "posted", externalTxid: input.txid, account: "invoice.expense", dataNetwork: current.dataNetwork },
+        { workspaceId: input.payerWorkspaceId, invoiceId: current.id, asset: current.asset, amountAtomic: current.receivedAmountAtomic || current.amountAtomic, direction: "credit", state: "posted", externalTxid: input.txid, account: "cash", dataNetwork: current.dataNetwork },
       ]);
       if (current.recipientUserId) await tx.insert(auditEvents).values({ workspaceId: current.recipientWorkspaceId || input.payerWorkspaceId, actorUserId: input.payerUserId, action: "invoice.payment.receipt_delivered", entityType: "invoice", entityId: current.publicId, metadata: { txid: input.txid, amountAtomic: current.amountAtomic } });
-      if (current.createdByUserId && current.createdByUserId !== input.payerUserId) await tx.insert(notifications).values({ recipientUserId: current.createdByUserId, workspaceId: current.workspaceId, category: "payment", title: "Invoice paid", body: `${current.publicId} was paid. Receipt and transaction details are available in Volta Finance.`, href: "/payments", entityType: "invoice", entityId: current.publicId });
-      if (current.recipientUserId && current.recipientUserId !== current.createdByUserId && current.recipientUserId !== input.payerUserId) await tx.insert(notifications).values({ recipientUserId: current.recipientUserId, workspaceId: current.recipientWorkspaceId, category: "payment", title: "Payment completed", body: `Payment for invoice ${current.publicId} has been verified.`, href: "/payments", entityType: "invoice", entityId: current.publicId });
+      if (current.createdByUserId && current.createdByUserId !== input.payerUserId) await tx.insert(notifications).values({ recipientUserId: current.createdByUserId, workspaceId: current.workspaceId, category: "payment", title: "Invoice paid", body: `${current.publicId} was paid. Receipt and transaction details are available in Volta Finance.`, href: "/payments", entityType: "invoice", entityId: current.publicId, dataNetwork: current.dataNetwork });
+      if (current.recipientUserId && current.recipientUserId !== current.createdByUserId && current.recipientUserId !== input.payerUserId) await tx.insert(notifications).values({ recipientUserId: current.recipientUserId, workspaceId: current.recipientWorkspaceId, category: "payment", title: "Payment completed", body: `Payment for invoice ${current.publicId} has been verified.`, href: "/payments", entityType: "invoice", entityId: current.publicId, dataNetwork: current.dataNetwork });
     }
     return { status: "paid" as const, txid: input.txid, invoiceIds: input.invoices.map((invoice) => invoice.publicId) };
   });
@@ -780,7 +863,7 @@ export async function createExternalInvoiceSubmission(input: { recipientUserId: 
     recipientUserId: input.recipientUserId, recipientWorkspaceId: input.workspaceId,
     recipientEmail: input.recipientEmail.trim().toLowerCase(), senderName: input.senderName.trim(), senderEmail: input.senderEmail.trim().toLowerCase(),
     direction: "payable", clientName: input.senderName.trim(), description: input.description.trim(), amountAtomic: input.amountAtomic, displayAmount: input.displayAmount, requestAsset: input.requestAsset,
-    asset: input.asset, dueDate: input.dueDate, receivingAddress: input.receivingAddress, status: "submitted",
+    asset: input.asset, dueDate: input.dueDate, receivingAddress: input.receivingAddress, status: "submitted", dataNetwork: input.receivingAddress.startsWith("bchtest:") ? "testnet" : "mainnet",
   }).returning();
   if (!created) throw new Error("Invoice submission could not be saved");
   await db.insert(auditEvents).values({ workspaceId: input.workspaceId, actorUserId: input.recipientUserId, action: "invoice.external.submitted", entityType: "invoice", entityId: publicId, metadata: { senderEmail: input.senderEmail.trim().toLowerCase() } });
@@ -865,8 +948,8 @@ export async function finalizeVerifiedInvoice(input: { workspaceId: number; publ
   const receiptHtml = `<article><h1>Volta Finance payment receipt</h1><p><strong>Invoice:</strong> ${safe(invoice.publicId)}</p><p><strong>Client:</strong> ${safe(invoice.clientName)}</p><p><strong>Amount:</strong> ${safe(invoice.displayAmount)} ${invoice.asset}</p><p><strong>Transaction:</strong> ${safe(input.txid)}</p><p><strong>Status:</strong> Verified on Bitcoin Cash</p></article>`;
   await db.update(invoices).set({ status: "paid", paymentTxid: input.txid, receiptHtml, updatedAt: new Date() }).where(eq(invoices.id, invoice.id));
   await db.insert(ledgerEntries).values([
-    { workspaceId: invoice.workspaceId, invoiceId: invoice.id, asset: invoice.asset, amountAtomic: invoice.amountAtomic, direction: "debit", state: "posted", externalTxid: input.txid, account: "cash" },
-    { workspaceId: invoice.workspaceId, invoiceId: invoice.id, asset: invoice.asset, amountAtomic: invoice.amountAtomic, direction: "credit", state: "posted", externalTxid: input.txid, account: "accounts.receivable" },
+    { workspaceId: invoice.workspaceId, invoiceId: invoice.id, asset: invoice.asset, amountAtomic: invoice.amountAtomic, direction: "debit", state: "posted", externalTxid: input.txid, account: "cash", dataNetwork: invoice.dataNetwork },
+    { workspaceId: invoice.workspaceId, invoiceId: invoice.id, asset: invoice.asset, amountAtomic: invoice.amountAtomic, direction: "credit", state: "posted", externalTxid: input.txid, account: "accounts.receivable", dataNetwork: invoice.dataNetwork },
   ]);
   if (invoice.createdByUserId) await db.insert(auditEvents).values({ workspaceId: invoice.workspaceId, actorUserId: invoice.createdByUserId, action: "invoice.payment.verified", entityType: "invoice", entityId: invoice.publicId, metadata: { txid: input.txid, amountAtomic: input.verifiedAmountAtomic } });
   return { status: "paid" as const, publicId: invoice.publicId, txid: input.txid };
@@ -881,11 +964,12 @@ export async function createPaymentIntent(input: {
   inputAmountAtomic: string;
   expectedOutputAtomic: string;
   quote: unknown;
+  dataNetwork?: "mainnet" | "testnet";
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
   const publicId = `INT-${nanoid(10).toUpperCase()}`;
-  const inserted = await db.insert(paymentIntents).values({ publicId, workspaceId: input.workspaceId, createdByUserId: input.createdByUserId, payerAsset: input.payerAsset, recipientAsset: input.recipientAsset, recipientAddress: input.recipientAddress, inputAmountAtomic: input.inputAmountAtomic, expectedOutputAtomic: input.expectedOutputAtomic, quote: input.quote, status: "quoted" }).returning({ id: paymentIntents.id });
+  const inserted = await db.insert(paymentIntents).values({ publicId, workspaceId: input.workspaceId, createdByUserId: input.createdByUserId, payerAsset: input.payerAsset, recipientAsset: input.recipientAsset, recipientAddress: input.recipientAddress, inputAmountAtomic: input.inputAmountAtomic, expectedOutputAtomic: input.expectedOutputAtomic, quote: input.quote, status: "quoted", dataNetwork: input.dataNetwork ?? "mainnet" }).returning({ id: paymentIntents.id });
   const intentId = inserted[0]?.id;
   if (!intentId) throw new Error("Payment intent creation failed");
   await db.insert(auditEvents).values({ workspaceId: input.workspaceId, actorUserId: input.createdByUserId, action: "payment_intent.quoted", entityType: "payment_intent", entityId: publicId, metadata: { payerAsset: input.payerAsset, recipientAsset: input.recipientAsset, inputAmountAtomic: input.inputAmountAtomic, expectedOutputAtomic: input.expectedOutputAtomic } });
@@ -1077,8 +1161,8 @@ export async function finalizeVerifiedIntent(input: { workspaceId: number; inten
   }
   if (intent[0].status === "completed") return { status: "completed" as const, txid: input.txid };
   await db.insert(ledgerEntries).values([
-    { workspaceId: input.workspaceId, asset: intent[0].payerAsset, amountAtomic: intent[0].inputAmountAtomic, direction: "debit", state: "posted", externalTxid: input.txid, account: "intent:payer" },
-    { workspaceId: input.workspaceId, asset: intent[0].recipientAsset, amountAtomic: input.verifiedAmountAtomic, direction: "credit", state: "posted", externalTxid: input.txid, account: "intent:recipient" },
+    { workspaceId: input.workspaceId, asset: intent[0].payerAsset, amountAtomic: intent[0].inputAmountAtomic, direction: "debit", state: "posted", externalTxid: input.txid, account: "intent:payer", dataNetwork: intent[0].dataNetwork },
+    { workspaceId: input.workspaceId, asset: intent[0].recipientAsset, amountAtomic: input.verifiedAmountAtomic, direction: "credit", state: "posted", externalTxid: input.txid, account: "intent:recipient", dataNetwork: intent[0].dataNetwork },
   ]);
   await db.update(paymentIntents).set({ status: "completed", txid: input.txid, expectedOutputAtomic: input.verifiedAmountAtomic }).where(eq(paymentIntents.id, input.intentId));
   await db.update(blockchainTransactions).set({ status: "confirmed", txid: input.txid }).where(eq(blockchainTransactions.intentId, input.intentId));
@@ -1169,7 +1253,7 @@ export async function updateEmployeePayrollEnrollment(input: { workspaceId: numb
   return updated;
 }
 
-export async function getEmployeePayrollForUser(input: { workspaceId: number; email: string }) {
+export async function getEmployeePayrollForUser(input: { workspaceId: number; email: string; network?: "mainnet" | "chipnet" }) {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
   const [employee] = await db.select().from(employees).where(and(eq(employees.workspaceId, input.workspaceId), sql`lower(${employees.email}) = ${input.email.trim().toLowerCase()}`)).limit(1);
@@ -1178,14 +1262,17 @@ export async function getEmployeePayrollForUser(input: { workspaceId: number; em
     .from(payrollItems).innerJoin(payrollRuns, and(eq(payrollItems.runId, payrollRuns.id), eq(payrollItems.workspaceId, payrollRuns.workspaceId)))
     .leftJoin(payslips, and(eq(payslips.payrollItemId, payrollItems.id), eq(payslips.employeeId, employee.id), eq(payslips.workspaceId, input.workspaceId)))
     .where(and(eq(payrollItems.workspaceId, input.workspaceId), eq(payrollItems.employeeId, employee.id))).orderBy(desc(payrollItems.updatedAt));
-  const [bchDestination, tokenDestination, stellarDestination] = await Promise.all([
-    getPersonalPayrollDestination({ email: input.email, asset: "BCH" }),
-    getPersonalPayrollDestination({ email: input.email, asset: "PUSD" }),
-    getPersonalStellarDestination({ email: input.email }),
+  const [bchDestination, tokenDestination, stellarDestination, evmDestination] = await Promise.all([
+    getPersonalPayrollDestination({ email: input.email, asset: "BCH", network: input.network ?? "mainnet" }),
+    getPersonalPayrollDestination({ email: input.email, asset: "PUSD", network: input.network ?? "mainnet" }),
+    getPersonalStellarDestination({ email: input.email, network: "stellar-testnet" }),
+    (() => { const mode = input.network ?? "mainnet"; const activeAsset = evmPayrollRouteForMode(employee.preferredAsset, mode); const route = parseEvmPayrollRoute(activeAsset); const allowed = mode === "mainnet" ? route?.network === "arc-mainnet" : route?.network === "base-sepolia" || route?.network === "arc-testnet"; return route && allowed ? db.select({ address: evmDestinations.address, network: evmDestinations.network }).from(evmDestinations).innerJoin(users, eq(evmDestinations.userId, users.id)).where(and(eq(users.email, input.email.trim().toLowerCase()), eq(evmDestinations.network, route.network), eq(evmDestinations.asset, route.asset), eq(evmDestinations.isDefault, true))).limit(1).then((rows) => rows[0]) : Promise.resolve(undefined); })(),
   ]);
   const isStellarAsset = employee.preferredAsset === "XLM" || employee.preferredAsset === "USDC";
-  const destination = isStellarAsset ? stellarDestination : employee.preferredAsset === "BCH" ? bchDestination : tokenDestination;
-  return { employee: { id: employee.id, fullName: employee.fullName, roleTitle: employee.roleTitle, preferredAsset: employee.preferredAsset, walletAddress: destination?.address ?? null, walletNetwork: isStellarAsset ? (stellarDestination ? "stellar-testnet" : null) : (destination && "network" in destination ? destination.network : null), bchAddress: bchDestination?.address ?? null, bchNetwork: bchDestination?.network ?? null, tokenAddress: tokenDestination?.address ?? null, tokenNetwork: tokenDestination?.network ?? null, stellarAddress: stellarDestination?.address ?? null, stellarNetwork: stellarDestination ? "stellar-testnet" as const : null, monthlyDisplayAmount: employee.monthlyDisplayAmount, monthlyAmountUnit: employee.monthlyAmountUnit, active: Boolean(employee.active) }, payments };
+  const activePreferredAsset = evmPayrollRouteForMode(employee.preferredAsset, input.network ?? "mainnet");
+  const isEvmAsset = Boolean(parseEvmPayrollRoute(activePreferredAsset));
+  const destination = isStellarAsset ? ((input.network ?? "mainnet") === "chipnet" ? stellarDestination : undefined) : isEvmAsset ? evmDestination : employee.preferredAsset === "BCH" ? bchDestination : tokenDestination;
+  return { employee: { id: employee.id, fullName: employee.fullName, roleTitle: employee.roleTitle, preferredAsset: activePreferredAsset, walletAddress: destination?.address ?? null, walletNetwork: isStellarAsset ? (stellarDestination ? "stellar-testnet" : null) : (destination && "network" in destination ? destination.network : null), bchAddress: bchDestination?.address ?? null, bchNetwork: bchDestination?.network ?? null, tokenAddress: tokenDestination?.address ?? null, tokenNetwork: tokenDestination?.network ?? null, stellarAddress: stellarDestination?.address ?? null, stellarNetwork: stellarDestination ? "stellar-testnet" as const : null, monthlyDisplayAmount: employee.monthlyDisplayAmount, monthlyAmountUnit: employee.monthlyAmountUnit, active: Boolean(employee.active) }, payments };
 }
 
 export async function importEmployeesForWorkspace(input: { workspaceId: number; actorUserId: number; rows: Array<{ fullName: string; email?: string; roleTitle: string; walletAddress?: string; preferredAsset: "BCH" | "PUSD" | "MUSD"; monthlyAmountAtomic: string; monthlyDisplayAmount: string }> }) {
@@ -1197,7 +1284,7 @@ export async function importEmployeesForWorkspace(input: { workspaceId: number; 
   return listEmployeesForWorkspace(input.workspaceId);
 }
 
-export async function createPayrollRunForWorkspace(input: { workspaceId: number; actorUserId: number; period: string; sourceAsset: "BCH" | "PUSD" | "MUSD"; items: Array<{ employeeId: number; amountAtomic: string; requestedAmountAtomic: string; displayAmount: string; asset: PayrollAsset; payoutAddress: string }>; stellarFunding?: { address: string; amountAtomic: string; quote: unknown } }) {
+export async function createPayrollRunForWorkspace(input: { workspaceId: number; actorUserId: number; period: string; sourceAsset: "BCH" | "PUSD" | "MUSD"; dataNetwork?: "mainnet" | "testnet"; items: Array<{ employeeId: number; amountAtomic: string; requestedAmountAtomic: string; displayAmount: string; asset: PayrollAsset; payoutAddress: string }>; stellarFunding?: { address: string; amountAtomic: string; quote: unknown }; evmFunding?: { address: string; amountAtomic: string; quote: unknown } }) {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
   if (!input.items.length) throw new Error("Cannot create a payroll run without employees");
@@ -1206,10 +1293,12 @@ export async function createPayrollRunForWorkspace(input: { workspaceId: number;
   if (input.items.some((item) => !employeeById.has(item.employeeId))) throw new Error("Payroll contains an employee outside this workspace");
   if (new Set(input.items.map((item) => item.employeeId)).size !== input.items.length) throw new Error("A payroll run can include each staff member only once");
   if (input.items.some((item) => { const employee = employeeById.get(item.employeeId); return !employee?.active || !item.payoutAddress || employee.preferredAsset !== item.asset || employee.monthlyAmountUnit !== "USDT"; })) throw new Error("Every payroll member must have a saved USDT pay amount, personal payout address, and selected payout asset");
-  if (input.items.some((item) => item.asset === "XLM" || item.asset === "USDC") && (input.sourceAsset !== "PUSD" || !input.stellarFunding)) throw new Error("Stellar payroll requires PUSD funding and a configured Stellar destination.");
+    if (input.items.some((item) => item.asset === "XLM" || item.asset === "USDC") && (input.sourceAsset !== "PUSD" || !input.stellarFunding)) throw new Error("Stellar payroll requires PUSD funding and a configured Stellar destination.");
+    if (input.items.some((item) => Boolean(parseEvmPayrollRoute(item.asset))) && ((input.sourceAsset !== "BCH" && input.sourceAsset !== "PUSD") || !input.evmFunding)) throw new Error("EVM payroll requires BCH or PUSD funding and a configured EVM destination.");
   const total = input.items.reduce((sum, item) => sum + BigInt(item.requestedAmountAtomic), 0n).toString();
   const publicId = `PAY-${nanoid(10).toUpperCase()}`;
-  const inserted = await db.insert(payrollRuns).values({ publicId, workspaceId: input.workspaceId, createdByUserId: input.actorUserId, period: input.period, sourceAsset: input.sourceAsset, totalAmountAtomic: total, totalAmountUnit: "USDT", status: "draft", ...(input.stellarFunding ? { stellarFundingAddress: input.stellarFunding.address, stellarFundingAmountAtomic: input.stellarFunding.amountAtomic, stellarPayoutQuote: input.stellarFunding.quote } : {}) }).returning({ id: payrollRuns.id });
+    const dataNetwork = input.dataNetwork ?? "mainnet";
+    const inserted = await db.insert(payrollRuns).values({ publicId, workspaceId: input.workspaceId, createdByUserId: input.actorUserId, period: input.period, sourceAsset: input.sourceAsset, totalAmountAtomic: total, totalAmountUnit: "USDT", status: "draft", dataNetwork, ...(input.stellarFunding ? { stellarFundingAddress: input.stellarFunding.address, stellarFundingAmountAtomic: input.stellarFunding.amountAtomic, stellarPayoutQuote: input.stellarFunding.quote } : {}), ...(input.evmFunding ? { evmFundingAddress: input.evmFunding.address, evmFundingAmountAtomic: input.evmFunding.amountAtomic } : {}) }).returning({ id: payrollRuns.id });
   const runId = inserted[0]?.id;
   if (!runId) throw new Error("Payroll run creation failed");
   await db.insert(payrollItems).values(input.items.map((item) => ({ ...item, requestedAmountUnit: "USDT" as const, runId, workspaceId: input.workspaceId, status: "pending" as const })));
@@ -1219,10 +1308,11 @@ export async function createPayrollRunForWorkspace(input: { workspaceId: number;
   return created[0];
 }
 
-export async function listPayrollRunsForWorkspace(workspaceId: number) {
+export async function listPayrollRunsForWorkspace(workspaceId: number, view: WorkspaceDataView = "mainnet") {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
-  return db.select().from(payrollRuns).where(eq(payrollRuns.workspaceId, workspaceId)).orderBy(desc(payrollRuns.createdAt));
+  const viewCondition = await dataViewCondition(payrollRuns.dataNetwork, view);
+  return db.select().from(payrollRuns).where(and(eq(payrollRuns.workspaceId, workspaceId), viewCondition)).orderBy(desc(payrollRuns.createdAt));
 }
 
 export async function getPayrollRunForWorkspace(workspaceId: number, runId: number) {
@@ -1266,14 +1356,15 @@ export async function updatePayrollRunStatus(input: { workspaceId: number; runId
     if (!existingDebit) {
       const debits = [];
       const entryState = input.status === "completed" ? "posted" as const : "pending" as const;
-      if (BigInt(input.sourceSpendAtomic) > 0n) debits.push({ workspaceId: input.workspaceId, asset: run.sourceAsset, amountAtomic: input.sourceSpendAtomic, direction: "credit" as const, state: entryState, externalTxid: input.txid, account: "cash" });
-      if (run.sourceAsset !== "BCH" && BigInt(input.bchCostAtomic) > 0n) debits.push({ workspaceId: input.workspaceId, asset: "BCH" as const, amountAtomic: input.bchCostAtomic, direction: "credit" as const, state: entryState, externalTxid: input.txid, account: "cash" });
+      if (BigInt(input.sourceSpendAtomic) > 0n) debits.push({ workspaceId: input.workspaceId, asset: run.sourceAsset, amountAtomic: input.sourceSpendAtomic, direction: "credit" as const, state: entryState, externalTxid: input.txid, account: "cash", dataNetwork: run.dataNetwork });
+      if (run.sourceAsset !== "BCH" && BigInt(input.bchCostAtomic) > 0n) debits.push({ workspaceId: input.workspaceId, asset: "BCH" as const, amountAtomic: input.bchCostAtomic, direction: "credit" as const, state: entryState, externalTxid: input.txid, account: "cash", dataNetwork: run.dataNetwork });
       if (debits.length) await db.insert(ledgerEntries).values(debits);
     }
   }
   if (input.status === "completed") {
     const [runItem] = await db.select({ txid: payrollItems.txid }).from(payrollItems).where(and(eq(payrollItems.workspaceId, input.workspaceId), eq(payrollItems.runId, input.runId))).limit(1);
-    if (runItem?.txid) await db.update(ledgerEntries).set({ state: "posted" }).where(and(eq(ledgerEntries.workspaceId, input.workspaceId), eq(ledgerEntries.externalTxid, runItem.txid), eq(ledgerEntries.account, "cash"), isNull(ledgerEntries.invoiceId), eq(ledgerEntries.state, "pending")));
+    const settlementTxids = new Set([runItem?.txid, run.evmFundingTxid, run.stellarFundingTxid].filter((txid): txid is string => Boolean(txid)));
+    for (const txid of settlementTxids) await db.update(ledgerEntries).set({ state: "posted" }).where(and(eq(ledgerEntries.workspaceId, input.workspaceId), eq(ledgerEntries.externalTxid, txid), eq(ledgerEntries.account, "cash"), isNull(ledgerEntries.invoiceId), eq(ledgerEntries.state, "pending")));
   }
   if (input.status === "cancelled") {
     if (run.status !== "draft" && run.status !== "approved") throw new Error("Only an unpaid draft or approved payroll run can be cancelled");
@@ -1295,13 +1386,35 @@ export async function recordStellarPayrollFunding(input: { workspaceId: number; 
       const [existingDebit] = await tx.select({ id: ledgerEntries.id }).from(ledgerEntries).where(and(eq(ledgerEntries.workspaceId, input.workspaceId), eq(ledgerEntries.externalTxid, input.txid), eq(ledgerEntries.account, "cash"), isNull(ledgerEntries.invoiceId))).limit(1);
       if (!existingDebit) {
         const entries = [];
-        if (BigInt(input.sourceSpendAtomic) > 0n) entries.push({ workspaceId: input.workspaceId, asset: run.sourceAsset, amountAtomic: input.sourceSpendAtomic, direction: "credit" as const, state: "pending" as const, externalTxid: input.txid, account: "cash" });
-        if (run.sourceAsset !== "BCH" && BigInt(input.bchCostAtomic) > 0n) entries.push({ workspaceId: input.workspaceId, asset: "BCH" as const, amountAtomic: input.bchCostAtomic, direction: "credit" as const, state: "pending" as const, externalTxid: input.txid, account: "cash" });
+        if (BigInt(input.sourceSpendAtomic) > 0n) entries.push({ workspaceId: input.workspaceId, asset: run.sourceAsset, amountAtomic: input.sourceSpendAtomic, direction: "credit" as const, state: "pending" as const, externalTxid: input.txid, account: "cash", dataNetwork: run.dataNetwork });
+        if (run.sourceAsset !== "BCH" && BigInt(input.bchCostAtomic) > 0n) entries.push({ workspaceId: input.workspaceId, asset: "BCH" as const, amountAtomic: input.bchCostAtomic, direction: "credit" as const, state: "pending" as const, externalTxid: input.txid, account: "cash", dataNetwork: run.dataNetwork });
         if (entries.length) await tx.insert(ledgerEntries).values(entries);
       }
     }
     const [updated] = await tx.update(payrollRuns).set({ stellarFundingTxid: input.txid, status: "processing", updatedAt: new Date() }).where(and(eq(payrollRuns.workspaceId, input.workspaceId), eq(payrollRuns.id, input.runId))).returning();
     if (!updated) throw new Error("Could not save the Stellar payroll funding transaction.");
+    return updated;
+  });
+}
+
+export async function recordEvmPayrollFunding(input: { workspaceId: number; runId: number; txid: string; sourceSpendAtomic: string; bchCostAtomic: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  return db.transaction(async (tx) => {
+    const [run] = await tx.select().from(payrollRuns).where(and(eq(payrollRuns.workspaceId, input.workspaceId), eq(payrollRuns.id, input.runId))).limit(1);
+    if (!run?.evmFundingAddress || !run.evmFundingAmountAtomic) throw new Error("This payroll run has no EVM funding plan.");
+    if (run.evmFundingTxid && run.evmFundingTxid !== input.txid) throw new Error("This payroll run already has a different EVM funding transaction.");
+    if (!run.evmFundingTxid) {
+      const [existingDebit] = await tx.select({ id: ledgerEntries.id }).from(ledgerEntries).where(and(eq(ledgerEntries.workspaceId, input.workspaceId), eq(ledgerEntries.externalTxid, input.txid), eq(ledgerEntries.account, "cash"), isNull(ledgerEntries.invoiceId))).limit(1);
+      if (!existingDebit) {
+        const entries = [];
+        if (BigInt(input.sourceSpendAtomic) > 0n) entries.push({ workspaceId: input.workspaceId, asset: run.sourceAsset, amountAtomic: input.sourceSpendAtomic, direction: "credit" as const, state: "pending" as const, externalTxid: input.txid, account: "cash", dataNetwork: run.dataNetwork });
+        if (run.sourceAsset !== "BCH" && BigInt(input.bchCostAtomic) > 0n) entries.push({ workspaceId: input.workspaceId, asset: "BCH" as const, amountAtomic: input.bchCostAtomic, direction: "credit" as const, state: "pending" as const, externalTxid: input.txid, account: "cash", dataNetwork: run.dataNetwork });
+        if (entries.length) await tx.insert(ledgerEntries).values(entries);
+      }
+    }
+    const [updated] = await tx.update(payrollRuns).set({ evmFundingTxid: input.txid, status: "processing", updatedAt: new Date() }).where(and(eq(payrollRuns.workspaceId, input.workspaceId), eq(payrollRuns.id, input.runId))).returning();
+    if (!updated) throw new Error("Could not save the EVM payroll funding transaction.");
     return updated;
   });
 }
@@ -1346,12 +1459,13 @@ export async function completeStellarPayrollRun(input: { workspaceId: number; ru
   const run = await getPayrollRunForWorkspace(input.workspaceId, input.runId);
   if (!run || !run.stellarFundingTxid || run.stellarPayoutTxid !== input.txid) throw new Error("The Stellar payroll transaction does not match this saved run.");
   const runItems = await listPayrollItemsForRun(input.workspaceId, input.runId);
-  if (runItems.some((item) => item.asset !== "XLM" && item.asset !== "USDC" && item.status !== "verified")) throw new Error("Verify every Chipnet payout before completing the Stellar payroll run.");
+  if (runItems.some((item) => item.asset !== "XLM" && item.asset !== "USDC" && !["BSUSDC", "BSETH", "ARUSDC"].includes(item.asset) && item.status !== "verified")) throw new Error("Verify every Chipnet payout before completing the Stellar payroll run.");
+  const otherPayoutsVerified = runItems.filter((item) => item.asset !== "XLM" && item.asset !== "USDC").every((item) => item.status === "verified");
   await db.update(payrollItems).set({ status: "verified", txid: input.txid, updatedAt: new Date() }).where(and(eq(payrollItems.workspaceId, input.workspaceId), eq(payrollItems.runId, input.runId), inArray(payrollItems.asset, ["XLM", "USDC"])));
-  await db.update(payrollRuns).set({ status: "completed", stellarPayoutSignedXdr: null, updatedAt: new Date() }).where(and(eq(payrollRuns.workspaceId, input.workspaceId), eq(payrollRuns.id, input.runId)));
+  await db.update(payrollRuns).set({ status: otherPayoutsVerified ? "completed" : "processing", stellarPayoutSignedXdr: null, updatedAt: new Date() }).where(and(eq(payrollRuns.workspaceId, input.workspaceId), eq(payrollRuns.id, input.runId)));
   await db.update(ledgerEntries).set({ state: "posted" }).where(and(eq(ledgerEntries.workspaceId, input.workspaceId), eq(ledgerEntries.externalTxid, run.stellarFundingTxid), eq(ledgerEntries.account, "cash"), isNull(ledgerEntries.invoiceId), eq(ledgerEntries.state, "pending")));
   await db.insert(auditEvents).values({ workspaceId: input.workspaceId, actorUserId: run.createdByUserId, action: "payroll.stellar.completed", entityType: "payroll_run", entityId: run.publicId, metadata: { fundingTxid: run.stellarFundingTxid, stellarTxid: input.txid } });
-  return { ...run, status: "completed" as const, stellarPayoutTxid: input.txid };
+  return { ...run, status: otherPayoutsVerified ? "completed" as const : "processing" as const, stellarPayoutTxid: input.txid };
 }
 
 export async function updatePayrollRunSourceAsset(input: { workspaceId: number; runId: number; sourceAsset: Asset }) {

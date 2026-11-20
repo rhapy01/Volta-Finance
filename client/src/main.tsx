@@ -8,6 +8,21 @@ import App from "./App";
 import "./index.css";
 import "./landing.css";
 
+window.addEventListener("vite:preloadError", (event) => {
+  const preloadEvent = event as Event & { payload?: unknown };
+  const detail = preloadEvent.payload instanceof Error ? preloadEvent.payload.message : String(preloadEvent.payload ?? "dynamic-import");
+  const retryKey = `voltra:preload-reload:${window.location.pathname}:${detail}`;
+  try {
+    if (window.sessionStorage.getItem(retryKey)) return;
+    window.sessionStorage.setItem(retryKey, "1");
+  } catch {
+    // Continue with the original module error if browser storage is unavailable.
+    return;
+  }
+  event.preventDefault();
+  window.location.reload();
+});
+
 const queryClient = new QueryClient();
 
 const redirectToLoginIfUnauthorized = (error: unknown) => {

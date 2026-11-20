@@ -1,21 +1,29 @@
 import { COOKIE_NAME } from "@shared/const";
-import { authenticateWithPassword, endSession, publicUser, registerWithPassword, SESSION_TTL_MS } from "./auth";
+import { authenticateWithPassword, changePasswordWithReset, endSession, issuePasswordReset, publicUser, registerWithPassword, SESSION_TTL_MS } from "./auth";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { acceptWorkspaceInviteById, addMemberToPayroll, addMembersToPayroll, addPaymentDestination, addStellarDestination, approvePayrollRun, attachExternalInvoice, completeCrosschainIntent, createCrosschainIntent, createExternalInvoiceSubmission, createInvoiceForWorkspace, createNotification, createPayrollRunForWorkspace, createPaymentIntent, createPayslipForItem, deletePaymentDestination, deleteStellarDestination, deletePendingWorkspaceInvite, expireUnfundedCrosschainIntent, failCrosschainIntent, finalizeCrosschainInvoice, finalizeInvoiceBatch, finalizeVerifiedIntent, finalizeVerifiedInvoice, getCrosschainIntentForInvoice, getCrosschainIntentForWorkspace, getEmployeePayrollForUser, getFinancialRecordsForWorkspace, getInvoiceForRecipient, getInvoiceForWorkspace, getOrCreateWorkspaceForUser, getPaymentDestinationForUser, getPersonalStellarDestination, getStellarDestinationForUser, getPaymentIntentForWorkspace, getPayrollItemForWorkspace, getPayrollRunForWorkspace, getPersonalPayrollDestination, getTreasuryPlan, getWorkspacePaymentMetrics, getWorkspaceRoleForUser, linkWalletForWorkspaceUser, listCrosschainIntentsForWorkspace, listEmployeesForWorkspace, listInvoiceInboxForUser, listInvoiceRecipientTargets, listInvoicesForWorkspace, listNotificationsForUser, listOrganizationMembersForWorkspace, listPaymentDestinationsForUser, listStellarDestinationsForUser, listPaymentIntentSummariesForTransactions, listPayrollItemsForRun, listPayrollRunsForWorkspace, listPendingWorkspaceInvitesForEmail, listTreasuryActivity, listWalletsForWorkspaceUser, listWorkspacesForUser, markInvoiceBatchBroadcast, markNotificationRead, markPaymentIntentBroadcast, recordCrosschainSourceTx, saveCrosschainStellarTransaction, saveTreasuryPlan, sendDraftInvoice, setActiveWorkspaceForUser, setDefaultPaymentDestination, setDefaultStellarDestination, unlinkWalletForWorkspaceUser, updateDraftInvoiceForWorkspace, updateEmployeePayrollEnrollment, updateEmployeePayoutPreference, updateIncomingInvoiceStatus, updatePayrollItem, updatePayrollRunSourceAsset, updatePayrollRunStatus, recordStellarPayrollFunding, saveStellarPayrollTransaction, completeStellarPayrollRun, markStellarPayrollFailed, resetFailedStellarPayrollForRetry } from "./db";
+import { addEvmDestination, deleteEvmDestination, listEvmDestinationsForUser, setDefaultEvmDestination } from "./evmDestinations";
+import { getPersonalEvmDestination } from "./evmDestinations";
+import { evmPayrollRouteFor, evmPayrollRouteForMode, parseEvmPayrollRoute, type EvmPayrollRoute } from "./integrations/evmNetworks";
+import { getEvmTestnetTransactionStatus, isValidEvmAddress, sendEvmTestnetPayout, verifyEvmTestnetPayout } from "./integrations/evm";
+import { recordEvmPayrollFunding } from "./db";
+import { createEvmInvoiceIntent, getEvmInvoiceIntent, recordEvmInvoiceFunding, setEvmInvoicePayout } from "./evmInvoiceSettlement";
+import { acceptWorkspaceInviteById, addMemberToPayroll, addMembersToPayroll, addPaymentDestination, addStellarDestination, approvePayrollRun, attachExternalInvoice, completeCrosschainIntent, createCrosschainIntent, createExternalInvoiceSubmission, createInvoiceForWorkspace, createNotification, createPayrollRunForWorkspace, createPaymentIntent, createPayslipForItem, deletePaymentDestination, deleteStellarDestination, deletePendingWorkspaceInvite, expireUnfundedCrosschainIntent, failCrosschainIntent, finalizeCrosschainInvoice, finalizeInvoiceBatch, finalizeVerifiedIntent, finalizeVerifiedInvoice, getCrosschainIntentForInvoice, getCrosschainIntentForWorkspace, getEmployeePayrollForUser, getFinancialRecordsForWorkspace, getInvoiceForRecipient, getInvoiceForWorkspace, getOrCreateWorkspaceForUser, getPaymentDestinationForUser, getPersonalStellarDestination, getStellarDestinationForUser, getPaymentIntentForWorkspace, getPayrollItemForWorkspace, getPayrollRunForWorkspace, getPersonalPayrollDestination, getTreasuryPlan, getWorkspacePaymentMetrics, getWorkspaceRoleForUser, linkWalletForWorkspaceUser, listCrosschainIntentsForWorkspace, listEmployeesForWorkspace, listInvoiceInboxForUser, listInvoiceRecipientTargets, listInvoicesForWorkspace, listNotificationsForUser, listOrganizationMembersForWorkspace, listPaymentDestinationsForUser, listStellarDestinationsForUser, listPaymentIntentSummariesForTransactions, listPayrollItemsForRun, listPayrollRunsForWorkspace, listPendingWorkspaceInvitesForEmail, listTreasuryActivity, listWalletsForWorkspaceUser, listWorkspacesForUser, markInvoiceBatchBroadcast, markNotificationRead, markPaymentIntentBroadcast, recordCrosschainSourceTx, revokePasswordResetTokens, saveCrosschainStellarTransaction, saveTreasuryPlan, sendDraftInvoice, setActiveWorkspaceForUser, setDefaultPaymentDestination, setDefaultStellarDestination, unlinkWalletForWorkspaceUser, updateDraftInvoiceForWorkspace, updateEmployeePayrollEnrollment, updateEmployeePayoutPreference, updateIncomingInvoiceStatus, updatePayrollItem, updatePayrollRunSourceAsset, updatePayrollRunStatus, recordStellarPayrollFunding, saveStellarPayrollTransaction, completeStellarPayrollRun, markStellarPayrollFailed, resetFailedStellarPayrollForRetry } from "./db";
 import { buildCauldronSwap, formatAtomicAmount, getCashTokenCategories, getChipnetAssetReadiness, getCauldronQuote, getIntentQuote, getPayrollQuote } from "./integrations/cauldron";
 import type { CauldronAsset } from "./integrations/cauldron";
 import { createPaymentHubInvoice } from "./integrations/paymentHub";
-import { sendOrganizationInviteEmail } from "./integrations/gmailSmtp";
+import { sendOrganizationInviteEmail, sendPasswordResetEmail } from "./integrations/gmailSmtp";
 import { broadcastChipnetTransaction, getProvider, getTransactionInputSources, getTransactionStatus, getWalletUtxos, getWalletUtxosForAddresses, verifyChipnetTransactionInputs, verifyRecipientOutput } from "./integrations/electrum";
-import { buildChipnetCauldronBuy, buildChipnetCauldronSell, buildChipnetPayrollBatch, buildChipnetPusdPayrollBatch, getChipnetCauldronBuyQuote, getChipnetCauldronSellQuote } from "./integrations/chipnetCauldron";
+import { buildChipnetCauldronBuy, buildChipnetCauldronSell, buildPayrollBatch as buildNetworkPayrollBatch, buildPusdPayrollBatch, getChipnetCauldronBuyQuote, getChipnetCauldronSellQuote } from "./integrations/chipnetCauldron";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import type { Asset } from "../drizzle/schema";
+import type { EvmReceiveAsset, EvmReceiveNetwork } from "../drizzle/schema";
 import { cashAddressToLockingBytecode } from "@bitauth/libauth";
 import { createHash, randomBytes } from "node:crypto";
 import { broadcastStellarTestnetXlm, formatStellarXlmAtomic, getStellarTestnetTransactionStatus, getStellarTestnetTreasuryStatus, quoteBchToStellarXlm, quotePusdToStellarUsdc, quotePusdToStellarXlm, quoteUsdtToStellarXlm, sendStellarTestnetPayrollBatch, sendStellarTestnetXlm, sendStellarTestnetXlmBatch, validateStellarPublicKey, StellarTransactionFailedError } from "./integrations/stellar";
+import { publicPayRouter } from "./publicPay";
 
 async function requireWorkspaceAdmin(userId: number, workspaceId: number) {
   const role = await getWorkspaceRoleForUser({ userId, workspaceId });
@@ -85,7 +93,7 @@ function presentInvoice(invoice: Awaited<ReturnType<typeof listInvoicesForWorksp
     expired: "Expired",
     cancelled: "Cancelled",
   }[invoice.status] as "Draft" | "Needs review" | "Awaiting payment" | "Awaiting verification" | "Paid" | "Expired" | "Cancelled";
-  return { id: invoice.publicId, client: invoice.clientName, description: invoice.description, amount: invoice.displayAmount, amountAtomic: invoice.amountAtomic, requestAsset: invoice.requestAsset, receivedAmountAtomic: invoice.receivedAmountAtomic, asset: invoice.asset, deliveryAsset: invoice.deliveryAsset, deliveryNetwork: invoice.deliveryNetwork, due: invoice.dueDate, status, direction: invoice.direction, recipientEmail: invoice.recipientEmail, senderName: invoice.senderName, senderEmail: invoice.senderEmail, receivingAddress: invoice.receivingAddress, network: invoice.deliveryNetwork === "stellar-testnet" || invoice.receivingAddress?.startsWith("bchtest:") ? "chipnet" as const : "mainnet" as const, paymentTxid: invoice.paymentTxid, externalInvoiceId: invoice.externalInvoiceId, crosschainSettlement, hasReceipt: Boolean(invoice.receiptHtml), receiptHtml: invoice.receiptHtml, createdAt: invoice.createdAt };
+  return { id: invoice.publicId, client: invoice.clientName, description: invoice.description, amount: invoice.displayAmount, amountAtomic: invoice.amountAtomic, requestAsset: invoice.requestAsset, receivedAmountAtomic: invoice.receivedAmountAtomic, asset: invoice.asset, deliveryAsset: invoice.deliveryAsset, deliveryNetwork: invoice.deliveryNetwork, due: invoice.dueDate, status, direction: invoice.direction, recipientEmail: invoice.recipientEmail, senderName: invoice.senderName, senderEmail: invoice.senderEmail, receivingAddress: invoice.receivingAddress, network: invoice.deliveryNetwork === "base-mainnet" || invoice.deliveryNetwork === "arc-mainnet" || invoice.receivingAddress?.startsWith("bitcoincash:") ? "mainnet" as const : "chipnet" as const, paymentTxid: invoice.paymentTxid, externalInvoiceId: invoice.externalInvoiceId, crosschainSettlement, hasReceipt: Boolean(invoice.receiptHtml), receiptHtml: invoice.receiptHtml, createdAt: invoice.createdAt };
 }
 
 async function presentInvoicesWithPayment(records: Awaited<ReturnType<typeof listInvoicesForWorkspace>>) {
@@ -106,8 +114,9 @@ async function presentInvoicesWithPayment(records: Awaited<ReturnType<typeof lis
 }
 
 export const appRouter = router({
+  pay: publicPayRouter,
   notifications: router({
-    list: protectedProcedure.query(({ ctx }) => listNotificationsForUser(ctx.user.id)),
+    list: protectedProcedure.input(z.object({ view: z.enum(["mainnet", "testnet_archive"]).default("mainnet") }).optional()).query(({ ctx, input }) => listNotificationsForUser(ctx.user.id, input?.view ?? "mainnet")),
     markRead: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(({ ctx, input }) => markNotificationRead({ userId: ctx.user.id, notificationId: input.id })),
     markAllRead: protectedProcedure.mutation(({ ctx }) => markNotificationRead({ userId: ctx.user.id, all: true })),
   }),
@@ -122,6 +131,33 @@ export const appRouter = router({
         const cookieOptions = getSessionCookieOptions(ctx.req);
         ctx.res.cookie(COOKIE_NAME, result.session.token, { ...cookieOptions, maxAge: SESSION_TTL_MS });
         return publicUser(result.user);
+      }),
+    requestPasswordReset: publicProcedure
+      .input(z.object({ email: z.string().trim().email().max(320) }))
+      .mutation(async ({ input }) => {
+        const reset = await issuePasswordReset(input.email);
+        if (reset) {
+          try {
+            const configuredBaseUrl = process.env.APP_BASE_URL || "https://voltrafinance.vercel.app";
+            const baseUrl = new URL(configuredBaseUrl);
+            if (baseUrl.protocol !== "https:" || baseUrl.username || baseUrl.password) throw new Error("Invalid public app URL");
+            const resetUrl = new URL("/login", baseUrl);
+            resetUrl.searchParams.set("mode", "reset");
+            resetUrl.searchParams.set("token", reset.token);
+            const delivery = await sendPasswordResetEmail({ to: input.email.trim().toLowerCase(), resetUrl: resetUrl.toString() });
+            if (!delivery.sent) await revokePasswordResetTokens(reset.userId);
+          } catch {
+            await revokePasswordResetTokens(reset.userId);
+            console.error("[Auth] Password reset email delivery failed");
+          }
+        }
+        return { accepted: true } as const;
+      }),
+    resetPassword: publicProcedure
+      .input(z.object({ token: z.string().min(40).max(50).regex(/^[A-Za-z0-9_-]+$/), password: z.string().min(12, "Use a password with at least 12 characters.").max(128, "Use a password with no more than 128 characters.") }))
+      .mutation(async ({ input }) => {
+        if (!await changePasswordWithReset(input.token, input.password)) throw new TRPCError({ code: "BAD_REQUEST", message: "This password reset link is invalid or expired. Request a new one to continue." });
+        return { success: true } as const;
       }),
     signIn: publicProcedure
       .input(z.object({ email: z.string().trim().email().max(320), password: z.string().min(1).max(128) }))
@@ -258,8 +294,8 @@ export const appRouter = router({
   }),
   stellarDestinations: router({
     list: protectedProcedure.query(async ({ ctx }) => listStellarDestinationsForUser(ctx.user.id)),
-    add: protectedProcedure.input(z.object({ label: z.string().trim().min(1).max(80), address: z.string().trim().length(56), makeDefault: z.boolean().default(false) })).mutation(async ({ ctx, input }) => {
-      if (!validateStellarPublicKey(input.address)) throw new TRPCError({ code: "BAD_REQUEST", message: "Enter a valid Stellar Testnet public address beginning with G." });
+    add: protectedProcedure.input(z.object({ label: z.string().trim().min(1).max(80), address: z.string().trim().length(56), network: z.enum(["stellar-mainnet", "stellar-testnet"]).default("stellar-testnet"), makeDefault: z.boolean().default(false) })).mutation(async ({ ctx, input }) => {
+      if (!validateStellarPublicKey(input.address)) throw new TRPCError({ code: "BAD_REQUEST", message: "Enter a valid Stellar public address beginning with G." });
       return addStellarDestination({ ...input, userId: ctx.user.id });
     }),
     makeDefault: protectedProcedure.input(z.object({ destinationId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
@@ -271,12 +307,27 @@ export const appRouter = router({
       return { success: true as const };
     }),
   }),
+  evmDestinations: router({
+    list: protectedProcedure.query(({ ctx }) => listEvmDestinationsForUser(ctx.user.id)),
+    add: protectedProcedure.input(z.object({ label: z.string().trim().min(1).max(80), network: z.enum(["base-sepolia", "arc-testnet", "base-mainnet", "arc-mainnet"]), asset: z.enum(["USDC", "ETH"]), address: z.string().trim().regex(/^0x[0-9a-fA-F]{40}$/), makeDefault: z.boolean().default(false) }).refine((input) => input.network === "base-sepolia" || input.asset === "USDC", { message: "This network supports USDC payouts only.", path: ["asset"] })).mutation(async ({ ctx, input }) => {
+      if (!isValidEvmAddress(input.address)) throw new TRPCError({ code: "BAD_REQUEST", message: "Enter a valid EVM receiving address beginning with 0x." });
+      return addEvmDestination({ ...input, userId: ctx.user.id });
+    }),
+    makeDefault: protectedProcedure.input(z.object({ destinationId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      if (!await setDefaultEvmDestination({ userId: ctx.user.id, destinationId: input.destinationId })) throw new TRPCError({ code: "NOT_FOUND", message: "EVM address was not found in this account." });
+      return { success: true as const };
+    }),
+    delete: protectedProcedure.input(z.object({ destinationId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      if (!await deleteEvmDestination({ userId: ctx.user.id, destinationId: input.destinationId })) throw new TRPCError({ code: "NOT_FOUND", message: "EVM address was not found in this account." });
+      return { success: true as const };
+    }),
+  }),
   finance: router({
-    treasuryActivity: protectedProcedure.query(async ({ ctx }) => {
+    treasuryActivity: protectedProcedure.input(z.object({ view: z.enum(["mainnet", "testnet_archive"]).default("mainnet") }).optional()).query(async ({ ctx, input }) => {
       const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
       await requirePersonalWorkspace(workspace);
       await requireWorkspaceAdmin(ctx.user.id, workspace.id);
-      return listTreasuryActivity(workspace.id);
+      return listTreasuryActivity(workspace.id, input?.view ?? "mainnet");
     }),
     treasuryPlan: protectedProcedure.query(async ({ ctx }) => {
       const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
@@ -372,6 +423,78 @@ export const appRouter = router({
         const intent = await createCrosschainIntent({ workspaceId: workspace.id, createdByUserId: ctx.user.id, sourceAsset: payerAsset, sourceAmountAtomic: quote.sourceAmountAtomic, invoicePublicId: invoice.publicId, depositAddress, destinationAddress: invoice.receivingAddress, expectedOutputAtomic: quote.destinationAmountAtomic, quote, expiresAt: new Date(quote.expiresAt) });
         return { intent, quote, depositAddress, sourceAsset: payerAsset, destinationAsset: "XLM" as const, invoicePublicId: invoice.publicId };
       }),
+    createEvmInvoiceIntent: protectedProcedure
+      .input(z.object({ publicId: z.string().trim().min(1).max(32), payerAsset: z.enum(["BCH", "PUSD"]).default("PUSD") }))
+      .mutation(async ({ ctx, input }) => {
+        const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
+        await requireWorkspaceAdmin(ctx.user.id, workspace.id);
+        const invoice = await getInvoiceForRecipient({ workspaceId: workspace.id, userId: ctx.user.id, publicId: input.publicId });
+        if (!invoice || invoice.status !== "awaiting_payment") throw new TRPCError({ code: "NOT_FOUND", message: "This invoice is no longer awaiting payment." });
+        const network = invoice.deliveryNetwork;
+        const asset = invoice.deliveryAsset;
+        if (!network || !["base-sepolia", "arc-testnet", "base-mainnet", "arc-mainnet"].includes(network) || (asset !== "USDC" && asset !== "ETH") || (network !== "base-sepolia" && asset !== "USDC") || !invoice.receivingAddress || !isValidEvmAddress(invoice.receivingAddress)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "This invoice does not have a valid Base or Arc USDC receiving destination." });
+        if (invoice.requestAsset !== "USDT") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "EVM invoice settlement currently supports USDT-denominated invoices." });
+        const sourceNetwork = network === "base-mainnet" || network === "arc-mainnet" ? "mainnet" : "chipnet";
+        const depositAddress = sourceNetwork === "mainnet"
+          ? (input.payerAsset === "PUSD" ? process.env.MAINNET_CROSSCHAIN_PUSD_ADDRESS || process.env.MAINNET_CROSSCHAIN_DEPOSIT_ADDRESS : process.env.MAINNET_CROSSCHAIN_BCH_ADDRESS || process.env.MAINNET_CROSSCHAIN_DEPOSIT_ADDRESS)?.trim()
+          : (input.payerAsset === "PUSD" ? process.env.CHIPNET_CROSSCHAIN_PUSD_ADDRESS || process.env.CHIPNET_CROSSCHAIN_DEPOSIT_ADDRESS : process.env.CHIPNET_CROSSCHAIN_BCH_ADDRESS || process.env.CHIPNET_CROSSCHAIN_DEPOSIT_ADDRESS)?.trim();
+        if (!depositAddress) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `Configure the ${sourceNetwork} ${input.payerAsset} intake address before creating an EVM invoice payment.` });
+        const decoded = cashAddressToLockingBytecode(depositAddress);
+        if (typeof decoded === "string" || decoded.prefix !== (sourceNetwork === "mainnet" ? "bitcoincash" : "bchtest") || (input.payerAsset === "PUSD" && !decoded.tokenSupport)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `The EVM invoice intake address is not compatible with ${sourceNetwork}.` });
+        let sourceAmountAtomic = invoice.amountAtomic;
+        if (input.payerAsset === "BCH") {
+          const sourceQuote = await getIntentQuote({ sell: "PUSD", buy: "BCH", amount: invoice.displayAmount, network: sourceNetwork });
+          sourceAmountAtomic = sourceQuote.outputAmount;
+        } else requireNetworkTokenCategory("PUSD", sourceNetwork);
+        let outputAmountAtomic: string;
+        if (asset === "USDC") outputAmountAtomic = (BigInt(invoice.amountAtomic) * 10_000n).toString();
+        else {
+          if (network !== "base-sepolia") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Arc Testnet accepts USDC only." });
+          const ethUsdRate = Number(process.env.BASE_SEPOLIA_ETH_USD_RATE || "");
+          if (!Number.isFinite(ethUsdRate) || ethUsdRate <= 0) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Set BASE_SEPOLIA_ETH_USD_RATE to quote Base Sepolia ETH payouts." });
+          outputAmountAtomic = (BigInt(invoice.amountAtomic) * 10n ** 18n / BigInt(Math.round(ethUsdRate * 100))).toString();
+        }
+        const quote = { payerAsset: input.payerAsset, sourceNetwork, sourceAmountAtomic, requestedAmountAtomic: invoice.amountAtomic, requestedAsset: invoice.requestAsset, destinationNetwork: network, destinationAsset: asset, outputAmountAtomic };
+        const intent = await createEvmInvoiceIntent({ workspaceId: workspace.id, userId: ctx.user.id, invoicePublicId: invoice.publicId, sourceAsset: input.payerAsset, sourceAmountAtomic, depositAddress, network: network as EvmReceiveNetwork, asset: asset as EvmReceiveAsset, destination: invoice.receivingAddress, outputAmountAtomic, quote });
+        return { intent, depositAddress, sourceAsset: input.payerAsset, sourceNetwork, sourceAmountAtomic, destinationNetwork: network, destinationAsset: asset, outputAmountAtomic, tokenCategory: input.payerAsset === "PUSD" ? getCashTokenCategories(sourceNetwork).PUSD : undefined };
+      }),
+    recordEvmInvoiceFunding: protectedProcedure
+      .input(z.object({ intentId: z.number().int().positive(), txid: z.string().regex(/^[0-9a-fA-F]{64}$/) }))
+      .mutation(async ({ ctx, input }) => { const workspace = await getOrCreateWorkspaceForUser(ctx.user.id); await requireWorkspaceAdmin(ctx.user.id, workspace.id); return recordEvmInvoiceFunding({ workspaceId: workspace.id, intentId: input.intentId, txid: input.txid }); }),
+    settleEvmInvoiceIntent: protectedProcedure
+      .input(z.object({ intentId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
+        await requireWorkspaceAdmin(ctx.user.id, workspace.id);
+        const intent = await getEvmInvoiceIntent({ workspaceId: workspace.id, intentId: input.intentId });
+        if (!intent || intent.createdByUserId !== ctx.user.id || !intent.sourceTxid) throw new TRPCError({ code: "NOT_FOUND", message: "EVM invoice payment was not found." });
+        const intentQuote = intent.quote && typeof intent.quote === "object" ? intent.quote as Record<string, unknown> : {};
+        const sourceNetwork = intentQuote.sourceNetwork === "mainnet" ? "mainnet" : "chipnet";
+        const sourceStatus = await getTransactionStatus({ txid: intent.sourceTxid, network: sourceNetwork });
+        if (!sourceStatus.found || sourceStatus.confirmations < 1) return { status: "pending" as const, confirmations: sourceStatus.confirmations };
+        if (intent.sourceAsset === "PUSD") {
+          const category = getCashTokenCategories(sourceNetwork).PUSD;
+          if (!category) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `PUSD is not configured on ${sourceNetwork}.` });
+          const verified = await verifyRecipientOutput({ txid: intent.sourceTxid, recipientAddress: intent.depositAddress, expectedAsset: "PUSD", expectedAmountAtomic: intent.sourceAmountAtomic, tokenCategory: category, network: sourceNetwork });
+          if (!verified.verified) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `The ${sourceNetwork} payment does not match the PUSD amount and intake address for this invoice.` });
+        } else {
+          const verified = await verifyRecipientOutput({ txid: intent.sourceTxid, recipientAddress: intent.depositAddress, expectedAsset: "BCH", expectedAmountAtomic: intent.sourceAmountAtomic, network: sourceNetwork });
+          if (!verified.verified) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `The ${sourceNetwork} payment does not match the BCH amount and intake address for this invoice.` });
+        }
+        let payoutTxid = intent.payoutTxid;
+        if (!payoutTxid) {
+          const payout = await sendEvmTestnetPayout({ network: intent.destinationNetwork, asset: intent.destinationAsset, destination: intent.destinationAddress, amountAtomic: intent.expectedOutputAtomic });
+          payoutTxid = payout.txid;
+          await setEvmInvoicePayout({ workspaceId: workspace.id, intentId: intent.id, txid: payoutTxid, completed: false });
+        }
+        const payoutStatus = await getEvmTestnetTransactionStatus({ network: intent.destinationNetwork, txid: payoutTxid });
+        if (!payoutStatus.found) return { status: "pending" as const, txid: payoutTxid };
+        if (!payoutStatus.successful) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "The EVM payout transaction failed; contact support before retrying this invoice." });
+        const payoutVerified = await verifyEvmTestnetPayout({ network: intent.destinationNetwork, asset: intent.destinationAsset, txid: payoutTxid, destination: intent.destinationAddress, amountAtomic: intent.expectedOutputAtomic });
+        if (!payoutVerified.verified) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "The EVM transaction does not contain the expected asset and amount for this invoice." });
+        await setEvmInvoicePayout({ workspaceId: workspace.id, intentId: intent.id, txid: payoutTxid, completed: true });
+        return { status: "completed" as const, txid: payoutTxid };
+      }),
     recordStellarIntentFunding: protectedProcedure
       .input(z.object({ intentId: z.number().int().positive(), txid: z.string().regex(/^[0-9a-fA-F]{64}$/) }))
       .mutation(async ({ ctx, input }) => {
@@ -456,7 +579,7 @@ export const appRouter = router({
           ? { provider: "direct wallet transfer" as const, sell: input.sell, buy: input.buy, inputAmount: toAtomicAmount(input.amount, input.sell), outputAmount: toAtomicAmount(input.amount, input.buy), legs: [], atomic: true }
           : await getIntentQuote({ ...input, network: quoteNetwork });
         await requireWorkspaceAdmin(ctx.user.id, workspace.id);
-        const intent = await createPaymentIntent({ workspaceId: workspace.id, createdByUserId: ctx.user.id, payerAsset: input.sell, recipientAsset: input.buy, recipientAddress: input.recipientAddress, inputAmountAtomic: quote.inputAmount, expectedOutputAtomic: quote.outputAmount, quote });
+        const intent = await createPaymentIntent({ workspaceId: workspace.id, createdByUserId: ctx.user.id, payerAsset: input.sell, recipientAsset: input.buy, recipientAddress: input.recipientAddress, inputAmountAtomic: quote.inputAmount, expectedOutputAtomic: quote.outputAmount, quote, dataNetwork: network === "mainnet" ? "mainnet" : "testnet" });
         return { intent, quote };
       }),
     createInvoicePaymentIntent: protectedProcedure
@@ -466,7 +589,7 @@ export const appRouter = router({
         await requireWorkspaceAdmin(ctx.user.id, workspace.id);
         const invoice = await getInvoiceForRecipient({ workspaceId: workspace.id, userId: ctx.user.id, publicId: input.publicId });
         if (!invoice || invoice.status !== "awaiting_payment") throw new TRPCError({ code: "NOT_FOUND", message: "This invoice is no longer awaiting payment." });
-        if (invoice.deliveryAsset === "XLM") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "This invoice settles to Stellar Testnet. Use the invoice crosschain payment section." });
+        if (invoice.deliveryAsset) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "This invoice uses a cross-network payout. Use its invoice settlement flow." });
         if (!invoice.receivingAddress) throw new TRPCError({ code: "BAD_REQUEST", message: "This invoice has no saved receiving address." });
         const decodedRecipient = cashAddressToLockingBytecode(invoice.receivingAddress);
         if (typeof decodedRecipient === "string") throw new TRPCError({ code: "BAD_REQUEST", message: "The invoice receiving address is invalid." });
@@ -542,6 +665,7 @@ export const appRouter = router({
           inputAmountAtomic: executionQuote.inputAmount,
           expectedOutputAtomic: outputAmountAtomic,
           quote,
+          dataNetwork: network === "mainnet" ? "mainnet" : "testnet",
         });
         return { intent, quote, outputAmountAtomic, network, recipientAddress: invoice.receivingAddress, recipientAsset: invoice.asset };
       }),
@@ -558,7 +682,7 @@ export const appRouter = router({
         if (input.buy !== "BCH") requireNetworkTokenCategory(input.buy, input.network);
         if (input.buy !== "BCH" && !decodedRecipient.tokenSupport) throw new TRPCError({ code: "BAD_REQUEST", message: "CashToken payroll requires the staff member’s token-aware receiving address." });
         const quote = await getPayrollQuote(input);
-        const intent = await createPaymentIntent({ workspaceId: workspace.id, createdByUserId: ctx.user.id, payerAsset: input.sell, recipientAsset: input.buy, recipientAddress: input.recipientAddress, inputAmountAtomic: quote.inputAmount, expectedOutputAtomic: quote.outputAmount, quote });
+        const intent = await createPaymentIntent({ workspaceId: workspace.id, createdByUserId: ctx.user.id, payerAsset: input.sell, recipientAsset: input.buy, recipientAddress: input.recipientAddress, inputAmountAtomic: quote.inputAmount, expectedOutputAtomic: quote.outputAmount, quote, dataNetwork: input.network === "mainnet" ? "mainnet" : "testnet" });
         return { intent, quote };
       }),
     quotePayrollPayout: protectedProcedure
@@ -619,11 +743,12 @@ export const appRouter = router({
         const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
         await requireOrganizationWorkspace(workspace);
         await requireWorkspaceAdmin(ctx.user.id, workspace.id);
-        if (input.network !== "chipnet") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "The combined Cauldron payroll composer currently supports Chipnet only." });
-        const built = await buildChipnetPayrollBatch({ payouts: input.payouts, funding: input.funding, changeAddress: input.changeAddress });
-        const prevouts = await verifyChipnetTransactionInputs(built.unsignedTxHex, built.sourceOutputs);
-        if (prevouts.unavailable.length && prevouts.missing.length === 0) throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: `Could not verify all combined payroll inputs with Chipnet peers: ${prevouts.unavailable.join(" | ")}` });
-        if (!prevouts.valid) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `A wallet or Cauldron pool input is no longer unspent (${prevouts.missing.join(", ")}). Rebuild the whole payroll batch from current UTXOs.` });
+        const built = await buildNetworkPayrollBatch({ payouts: input.payouts, funding: input.funding, changeAddress: input.changeAddress, network: input.network });
+        if (input.network === "chipnet") {
+          const prevouts = await verifyChipnetTransactionInputs(built.unsignedTxHex, built.sourceOutputs);
+          if (prevouts.unavailable.length && prevouts.missing.length === 0) throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: `Could not verify all combined payroll inputs with Chipnet peers: ${prevouts.unavailable.join(" | ")}` });
+          if (!prevouts.valid) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `A wallet or Cauldron pool input is no longer unspent (${prevouts.missing.join(", ")}). Rebuild the whole payroll batch from current UTXOs.` });
+        }
         return built;
       }),
     buildPusdPayrollBatch: protectedProcedure
@@ -637,11 +762,12 @@ export const appRouter = router({
         const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
         await requireOrganizationWorkspace(workspace);
         await requireWorkspaceAdmin(ctx.user.id, workspace.id);
-        if (input.network !== "chipnet") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "The combined PUSD payroll composer currently supports Chipnet only." });
-        const built = await buildChipnetPusdPayrollBatch(input);
-        const prevouts = await verifyChipnetTransactionInputs(built.unsignedTxHex, built.sourceOutputs);
-        if (prevouts.unavailable.length && prevouts.missing.length === 0) throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: `Could not verify the combined PUSD payroll inputs with Chipnet peers: ${prevouts.unavailable.join(" | ")}` });
-        if (!prevouts.valid) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `A wallet or Cauldron pool input is no longer unspent (${prevouts.missing.join(", ")}). Rebuild the PUSD payroll batch from current UTXOs.` });
+        const built = await buildPusdPayrollBatch({ ...input, network: input.network });
+        if (input.network === "chipnet") {
+          const prevouts = await verifyChipnetTransactionInputs(built.unsignedTxHex, built.sourceOutputs);
+          if (prevouts.unavailable.length && prevouts.missing.length === 0) throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: `Could not verify the combined PUSD payroll inputs with Chipnet peers: ${prevouts.unavailable.join(" | ")}` });
+          if (!prevouts.valid) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `A wallet or Cauldron pool input is no longer unspent (${prevouts.missing.join(", ")}). Rebuild the PUSD payroll batch from current UTXOs.` });
+        }
         return built;
       }),
     utxos: protectedProcedure
@@ -698,40 +824,49 @@ export const appRouter = router({
         return { ...(await finalizeVerifiedIntent({ workspaceId: workspace.id, intentId: intent.id, txid: input.txid, verified: verification.verified, verifiedAmountAtomic: verification.amountAtomic })), confirmations: status.confirmations, verified: verification.verified, receivedAmountAtomic: verification.amountAtomic };
       }),
     workspace: protectedProcedure.query(async ({ ctx }) => getOrCreateWorkspaceForUser(ctx.user.id)),
-    listInvoices: protectedProcedure.query(async ({ ctx }) => {
+    listInvoices: protectedProcedure.input(z.object({ view: z.enum(["mainnet", "testnet_archive"]).default("mainnet") }).optional()).query(async ({ ctx, input }) => {
       const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
       await requireWorkspaceAdmin(ctx.user.id, workspace.id);
-      const rows = await listInvoicesForWorkspace(workspace.id);
+      const rows = await listInvoicesForWorkspace(workspace.id, input?.view ?? "mainnet");
       return presentInvoicesWithPayment(rows);
     }),
-    workspacePaymentMetrics: protectedProcedure.query(async ({ ctx }) => {
+    workspacePaymentMetrics: protectedProcedure.input(z.object({ view: z.enum(["mainnet", "testnet_archive"]).default("mainnet") }).optional()).query(async ({ ctx, input }) => {
       const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
-      return getWorkspacePaymentMetrics(workspace.id);
+      return getWorkspacePaymentMetrics(workspace.id, input?.view ?? "mainnet");
     }),
-    financialRecords: protectedProcedure.query(async ({ ctx }) => {
+    financialRecords: protectedProcedure.input(z.object({ view: z.enum(["mainnet", "testnet_archive"]).default("mainnet") }).optional()).query(async ({ ctx, input }) => {
       const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
       if (workspace.type === "organization") await requireWorkspaceAdmin(ctx.user.id, workspace.id);
-      return getFinancialRecordsForWorkspace(workspace.id, ctx.user.email);
+      return getFinancialRecordsForWorkspace(workspace.id, ctx.user.email, input?.view ?? "mainnet");
     }),
     createInvoice: protectedProcedure
-      .input(z.object({ clientName: z.string().trim().min(1).max(200), amount: z.string().trim().min(1).max(80), requestAsset: z.enum(["USDT", "BCH", "PUSD", "MUSD"]).default("USDT"), asset: z.enum(["BCH", "PUSD", "MUSD", "XLM"]), dueDate: z.string().trim().min(1).max(40), destinationId: z.number().int().positive().optional(), stellarDestinationId: z.number().int().positive().optional() }))
+      .input(z.object({ clientName: z.string().trim().min(1).max(200), amount: z.string().trim().min(1).max(80), requestAsset: z.enum(["USDT", "BCH", "PUSD", "MUSD"]).default("USDT"), asset: z.enum(["BCH", "PUSD", "MUSD", "XLM", "USDC_BASE", "ETH_BASE", "USDC_ARC", "USDC_BASE_MAINNET", "USDC_ARC_MAINNET"]), network: z.enum(["mainnet", "chipnet"]).default("chipnet"), dueDate: z.string().trim().min(1).max(40), destinationId: z.number().int().positive().optional(), stellarDestinationId: z.number().int().positive().optional(), evmDestinationId: z.number().int().positive().optional() }))
       .mutation(async ({ ctx, input }) => {
         const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
         await requireWorkspaceAdmin(ctx.user.id, workspace.id);
         const isStellarDelivery = input.asset === "XLM";
-        const settlementAsset: Asset = input.asset === "XLM" ? "PUSD" : input.asset;
+        const isEvmDelivery = input.asset.includes("BASE") || input.asset.includes("ARC") || input.asset === "ETH_BASE";
+        const evmNetwork = input.asset === "USDC_ARC" ? "arc-testnet" as const : input.asset === "USDC_BASE_MAINNET" ? "base-mainnet" as const : input.asset === "USDC_ARC_MAINNET" ? "arc-mainnet" as const : "base-sepolia" as const;
+        const evmAsset = input.asset === "ETH_BASE" ? "ETH" as const : "USDC" as const;
+        const settlementAsset: Asset = input.asset === "XLM" || isEvmDelivery ? "PUSD" : input.asset as Asset;
         let receivingAddress: string;
-        let deliveryAsset: "XLM" | null = null;
-        let deliveryNetwork: "stellar-testnet" | null = null;
+        let deliveryAsset: "XLM" | "USDC" | "ETH" | null = null;
+        let deliveryNetwork: "stellar-testnet" | "base-sepolia" | "arc-testnet" | "base-mainnet" | "arc-mainnet" | null = null;
         if (isStellarDelivery) {
           const destination = input.stellarDestinationId ? await getStellarDestinationForUser({ userId: ctx.user.id, destinationId: input.stellarDestinationId }) : undefined;
           if (!destination || !validateStellarPublicKey(destination.address)) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose a saved Stellar Testnet address from Profile settings." });
           receivingAddress = destination.address;
           deliveryAsset = "XLM";
           deliveryNetwork = "stellar-testnet";
+        } else if (isEvmDelivery) {
+          const destination = input.evmDestinationId ? (await listEvmDestinationsForUser(ctx.user.id)).find((row) => row.id === input.evmDestinationId && row.network === evmNetwork && row.asset === evmAsset) : undefined;
+          if (!destination || !isValidEvmAddress(destination.address)) throw new TRPCError({ code: "BAD_REQUEST", message: `Choose a saved ${evmNetwork} ${evmAsset} address from Profile settings.` });
+          receivingAddress = destination.address;
+          deliveryAsset = evmAsset;
+          deliveryNetwork = evmNetwork;
         } else {
-          const destination = input.destinationId ? await getPaymentDestinationForUser({ userId: ctx.user.id, destinationId: input.destinationId, asset: settlementAsset, network: "chipnet" }) : undefined;
-          if (!destination) throw new TRPCError({ code: "BAD_REQUEST", message: `Choose a saved testnet (Chipnet) ${input.asset} receiving address from Profile settings.` });
+          const destination = input.destinationId ? await getPaymentDestinationForUser({ userId: ctx.user.id, destinationId: input.destinationId, asset: settlementAsset, network: input.network }) : undefined;
+          if (!destination) throw new TRPCError({ code: "BAD_REQUEST", message: `Choose a saved ${input.network} ${input.asset} receiving address from Profile settings.` });
           receivingAddress = destination.address;
         }
         const created = await createInvoiceForWorkspace({
@@ -747,6 +882,7 @@ export const appRouter = router({
           asset: settlementAsset,
           deliveryAsset,
           deliveryNetwork,
+          dataNetwork: deliveryNetwork === "base-mainnet" || deliveryNetwork === "arc-mainnet" || (!deliveryNetwork && input.network === "mainnet") ? "mainnet" : "testnet",
           dueDate: input.dueDate,
           receivingAddress,
         });
@@ -821,10 +957,10 @@ export const appRouter = router({
         if (!sent) throw new TRPCError({ code: "CONFLICT", message: "This invoice draft was already sent." });
         return presentInvoice(sent);
       }),
-    incomingInvoices: protectedProcedure.query(async ({ ctx }) => {
+    incomingInvoices: protectedProcedure.input(z.object({ view: z.enum(["mainnet", "testnet_archive"]).default("mainnet") }).optional()).query(async ({ ctx, input }) => {
       const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
       if (workspace.type === "organization") await requireWorkspaceAdmin(ctx.user.id, workspace.id);
-      const rows = await listInvoiceInboxForUser({ workspaceId: workspace.id, userId: ctx.user.id });
+      const rows = await listInvoiceInboxForUser({ workspaceId: workspace.id, userId: ctx.user.id, view: input?.view ?? "mainnet" });
       return presentInvoicesWithPayment(rows);
     }),
     submitExternalInvoice: publicProcedure
@@ -866,7 +1002,7 @@ export const appRouter = router({
         const selected = await Promise.all(uniqueIds.map((publicId) => getInvoiceForRecipient({ workspaceId: workspace.id, userId: ctx.user.id, publicId })));
         if (selected.some((invoice) => !invoice || !["awaiting_payment", "awaiting_verification"].includes(invoice.status) || !invoice.receivingAddress || (invoice.status === "awaiting_verification" && invoice.paymentTxid !== input.txid))) throw new TRPCError({ code: "BAD_REQUEST", message: "Every selected invoice must be accepted and awaiting payment with this transaction." });
         const invoicesToPay = selected as NonNullable<(typeof selected)[number]>[];
-        if (invoicesToPay.some((invoice) => invoice.deliveryAsset === "XLM")) throw new TRPCError({ code: "BAD_REQUEST", message: "Stellar Testnet invoices must be paid through their invoice crosschain intent." });
+        if (invoicesToPay.some((invoice) => invoice.deliveryAsset)) throw new TRPCError({ code: "BAD_REQUEST", message: "Cross-network invoices must be paid through their invoice settlement intent." });
         const asset = invoicesToPay[0].asset;
         if (asset !== "BCH") requireNetworkTokenCategory(asset, input.network);
         if (invoicesToPay.some((invoice) => invoice.asset !== asset)) throw new TRPCError({ code: "BAD_REQUEST", message: "Pay up to five invoices together when they all request the same asset." });
@@ -958,30 +1094,35 @@ export const appRouter = router({
         if (!invoice.receiptHtml) throw new Error("A verified receipt is not available yet");
         return { publicId: invoice.publicId, html: invoice.receiptHtml, filename: `${invoice.publicId}-receipt.html` };
       }),
-    payrollData: protectedProcedure.query(async ({ ctx }) => {
+    payrollData: protectedProcedure.input(z.object({ network: z.enum(["mainnet", "chipnet"]).default("mainnet") }).optional()).query(async ({ ctx, input }) => {
       const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
       await requireOrganizationWorkspace(workspace);
       await requireWorkspaceAdmin(ctx.user.id, workspace.id);
-      const [employees, runs, members] = await Promise.all([listEmployeesForWorkspace(workspace.id), listPayrollRunsForWorkspace(workspace.id), listOrganizationMembersForWorkspace(workspace.id)]);
+      const archiveView = input?.network === "mainnet" ? "mainnet" : "testnet_archive";
+      const [employees, runs, members] = await Promise.all([listEmployeesForWorkspace(workspace.id), listPayrollRunsForWorkspace(workspace.id, archiveView), listOrganizationMembersForWorkspace(workspace.id)]);
       const items = runs.length ? await listPayrollItemsForRun(workspace.id, runs[0].id) : [];
       const employeesWithPersonalAddresses = await Promise.all(employees.map(async (employee) => {
         if (!employee.email) return { ...employee, walletAddress: null, walletNetwork: null, bchAddress: null, bchNetwork: null, tokenAddress: null, tokenNetwork: null, stellarAddress: null, stellarNetwork: null };
-        const [bchDestination, tokenDestination, stellarDestination] = await Promise.all([
-          getPersonalPayrollDestination({ email: employee.email, asset: "BCH" }),
-          getPersonalPayrollDestination({ email: employee.email, asset: "PUSD" }),
-          getPersonalStellarDestination({ email: employee.email }),
+          const activePreferredAsset = evmPayrollRouteForMode(employee.preferredAsset, input?.network ?? "mainnet");
+          const evmRoute = parseEvmPayrollRoute(activePreferredAsset);
+          const evmRouteAvailable = evmRoute && ((input?.network ?? "mainnet") === "mainnet" ? evmRoute.network === "arc-mainnet" : evmRoute.network === "base-sepolia" || evmRoute.network === "arc-testnet");
+          const [bchDestination, tokenDestination, stellarDestination, evmDestination] = await Promise.all([
+          getPersonalPayrollDestination({ email: employee.email, asset: "BCH", network: input?.network ?? "mainnet" }),
+          getPersonalPayrollDestination({ email: employee.email, asset: "PUSD", network: input?.network ?? "mainnet" }),
+          getPersonalStellarDestination({ email: employee.email, network: "stellar-testnet" }),
+            evmRouteAvailable ? getPersonalEvmDestination({ email: employee.email, route: activePreferredAsset as EvmPayrollRoute }) : Promise.resolve(undefined),
         ]);
         const isStellarAsset = employee.preferredAsset === "XLM" || employee.preferredAsset === "USDC";
-        const destination = isStellarAsset ? stellarDestination : employee.preferredAsset === "BCH" ? bchDestination : tokenDestination;
-        return { ...employee, walletAddress: destination?.address ?? null, walletNetwork: isStellarAsset ? (stellarDestination ? "stellar-testnet" : null) : destination && "network" in destination ? destination.network : null, bchAddress: bchDestination?.address ?? null, bchNetwork: bchDestination?.network ?? null, tokenAddress: tokenDestination?.address ?? null, tokenNetwork: tokenDestination?.network ?? null, stellarAddress: stellarDestination?.address ?? null, stellarNetwork: stellarDestination ? "stellar-testnet" as const : null };
+          const destination = evmRoute ? evmDestination : isStellarAsset ? ((input?.network ?? "mainnet") === "chipnet" ? stellarDestination : undefined) : employee.preferredAsset === "BCH" ? bchDestination : tokenDestination;
+          return { ...employee, preferredAsset: activePreferredAsset, walletAddress: destination?.address ?? null, walletNetwork: evmRoute ? evmDestination?.network ?? null : isStellarAsset ? (destination ? "stellar-testnet" : null) : destination && "network" in destination ? destination.network : null, bchAddress: bchDestination?.address ?? null, bchNetwork: bchDestination?.network ?? null, tokenAddress: tokenDestination?.address ?? null, tokenNetwork: tokenDestination?.network ?? null, stellarAddress: stellarDestination?.address ?? null, stellarNetwork: stellarDestination ? "stellar-testnet" as const : null };
       }));
       return { employees: employeesWithPersonalAddresses, runs, latestItems: items, members: members.map((member) => { const payrollEmployee = employeesWithPersonalAddresses.find((employee) => employee.email?.toLowerCase() === member.email.toLowerCase()); return { ...member, payrollEmployeeId: payrollEmployee?.id ?? null, payrollActive: Boolean(payrollEmployee?.active), payrollRoleTitle: payrollEmployee?.roleTitle ?? null, payrollAmount: payrollEmployee?.monthlyDisplayAmount ?? null, payrollAmountUnit: payrollEmployee?.monthlyAmountUnit ?? null, payrollPreferredAsset: payrollEmployee?.preferredAsset ?? null, stellarAddress: payrollEmployee?.stellarAddress ?? null }; }) };
     }),
-    employeePayroll: protectedProcedure.query(async ({ ctx }) => {
+    employeePayroll: protectedProcedure.input(z.object({ network: z.enum(["mainnet", "chipnet"]).default("mainnet") }).optional()).query(async ({ ctx, input }) => {
       const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
       await requireOrganizationWorkspace(workspace);
       if (!await getWorkspaceRoleForUser({ userId: ctx.user.id, workspaceId: workspace.id })) throw new TRPCError({ code: "FORBIDDEN", message: "Join this organization to view your payroll profile." });
-      return getEmployeePayrollForUser({ workspaceId: workspace.id, email: ctx.user.email });
+      return getEmployeePayrollForUser({ workspaceId: workspace.id, email: ctx.user.email, network: input?.network ?? "mainnet" });
     }),
     addPayrollMember: protectedProcedure
       .input(z.object({ memberUserId: z.number().int().positive(), roleTitle: z.string().trim().min(1).max(120), amount: z.string().trim().min(1).max(80) }))
@@ -1016,16 +1157,18 @@ export const appRouter = router({
         return updated;
       }),
     updateMyPayrollPreference: protectedProcedure
-      .input(z.object({ asset: z.enum(["BCH", "PUSD", "MUSD", "XLM", "USDC"]) }))
+      .input(z.object({ asset: z.enum(["BCH", "PUSD", "MUSD", "XLM", "USDC", "BSUSDC", "BSETH", "ARUSDC", "BMUSDC", "AMUSDC"]) }))
       .mutation(async ({ ctx, input }) => {
         const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
         await requireOrganizationWorkspace(workspace);
         if (!await getWorkspaceRoleForUser({ userId: ctx.user.id, workspaceId: workspace.id })) throw new TRPCError({ code: "FORBIDDEN", message: "Join this organization before setting a payroll destination." });
         const isStellarAsset = input.asset === "XLM" || input.asset === "USDC";
-        const destination = isStellarAsset
-          ? await getPersonalStellarDestination({ email: ctx.user.email })
-          : await getPersonalPayrollDestination({ email: ctx.user.email, asset: input.asset as Asset });
-        if (!destination) throw new TRPCError({ code: "PRECONDITION_FAILED", message: isStellarAsset ? "Save a Stellar Testnet address in your personal Profile settings first." : `Set a default Chipnet ${input.asset === "BCH" ? "BCH" : "CashTokens"} receiving address in your personal Profile settings first.` });
+        const evmRoute = parseEvmPayrollRoute(input.asset);
+        const destination = evmRoute
+          ? await getPersonalEvmDestination({ email: ctx.user.email, route: input.asset as EvmPayrollRoute })
+          : isStellarAsset ? await getPersonalStellarDestination({ email: ctx.user.email })
+            : await getPersonalPayrollDestination({ email: ctx.user.email, asset: input.asset as Asset });
+        if (!destination) throw new TRPCError({ code: "PRECONDITION_FAILED", message: evmRoute ? "Save a default matching Base or Arc address in Profile settings first." : isStellarAsset ? "Save a Stellar Testnet address in your personal Profile settings first." : `Set a default Chipnet ${input.asset === "BCH" ? "BCH" : "CashTokens"} receiving address in your personal Profile settings first.` });
         const employee = (await listEmployeesForWorkspace(workspace.id)).find((row) => row.email?.toLowerCase() === ctx.user.email.toLowerCase() && row.active);
         if (!employee) throw new TRPCError({ code: "NOT_FOUND", message: "Ask your organization admin to add you to payroll before setting your payout preference." });
         const updated = await updateEmployeePayoutPreference({ workspaceId: workspace.id, email: ctx.user.email, asset: input.asset });
@@ -1033,24 +1176,39 @@ export const appRouter = router({
         return updated;
       }),
     createPayrollRun: protectedProcedure
-      .input(z.object({ period: z.string().trim().min(1).max(40), sourceAsset: z.enum(["BCH", "PUSD", "MUSD"]), items: z.array(z.object({ employeeId: z.number().int().positive(), amount: z.string().trim().min(1).max(80) })).min(1).max(500) }))
+      .input(z.object({ period: z.string().trim().min(1).max(40), sourceAsset: z.enum(["BCH", "PUSD", "MUSD"]), network: z.enum(["mainnet", "chipnet"]).default("chipnet"), items: z.array(z.object({ employeeId: z.number().int().positive(), amount: z.string().trim().min(1).max(80) })).min(1).max(500) }))
       .mutation(async ({ ctx, input }) => {
+        let payrollStage = "workspace";
+        try {
         const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
         await requireOrganizationWorkspace(workspace);
         await requireWorkspaceAdmin(ctx.user.id, workspace.id);
+        payrollStage = "employee setup";
         const employees = await listEmployeesForWorkspace(workspace.id);
-        const preferredFor = (item: { employeeId: number }) => employees.find((employee) => employee.id === item.employeeId)?.preferredAsset;
+        const preferredFor = (item: { employeeId: number }) => { const asset = employees.find((employee) => employee.id === item.employeeId)?.preferredAsset; return asset ? evmPayrollRouteForMode(asset, input.network) : undefined; };
         const stellarInputs = input.items.filter((item) => preferredFor(item) === "XLM" || preferredFor(item) === "USDC");
         const xlmInputs = stellarInputs.filter((item) => preferredFor(item) === "XLM");
         const usdcInputs = stellarInputs.filter((item) => preferredFor(item) === "USDC");
+        const evmInputs = input.items.filter((item) => Boolean(parseEvmPayrollRoute(preferredFor(item) || "")));
+        const unsupportedEvmInputs = evmInputs.filter((item) => {
+          const route = parseEvmPayrollRoute(preferredFor(item) || "");
+          return input.network === "mainnet" ? route?.network !== "arc-mainnet" : route?.network !== "base-sepolia" && route?.network !== "arc-testnet";
+        });
+        if (unsupportedEvmInputs.length) throw new TRPCError({ code: "PRECONDITION_FAILED", message: input.network === "mainnet" ? "Mainnet payroll currently supports Arc USDC only. Ask the staff member to select Arc Mainnet or a BCH asset." : "Testnet payroll requires a Testnet payout option. Ask the staff member to select Base Sepolia or Arc Testnet." });
+        if (stellarInputs.length && input.network === "mainnet") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Stellar Testnet payouts require Chipnet funding. Select Chipnet for this payroll run." });
+        if (evmInputs.some((item) => { const route = parseEvmPayrollRoute(preferredFor(item) || ""); return route?.network === "base-mainnet" || route?.network === "arc-mainnet"; }) && input.network !== "mainnet") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Base and Arc Mainnet payroll routes require a Bitcoin Cash Mainnet funding run." });
         if (stellarInputs.length && input.sourceAsset !== "PUSD") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Payroll runs with Stellar recipients must use PUSD as the source asset." });
+        if (evmInputs.length && input.sourceAsset === "MUSD") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Mainnet EVM payroll can be funded with BCH or PUSD. MUSD is not supported as the source asset." });
         if (stellarInputs.length > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "A Stellar payroll run can include up to 100 Stellar recipients." });
         if (stellarInputs.length && input.items.length > 50) throw new TRPCError({ code: "BAD_REQUEST", message: "A PUSD-funded payroll run with Stellar recipients can include up to 50 total staff payouts." });
         if (stellarInputs.length && input.items.some((item) => preferredFor(item) === "MUSD")) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "A PUSD-funded run cannot currently combine Stellar recipients and MUSD recipients. Prepare separate runs." });
         let stellarFunding: { address: string; amountAtomic: string; quote: unknown } | undefined;
+        let evmFunding: { address: string; amountAtomic: string; quote: unknown } | undefined;
+        const evmFundingNetwork = input.network;
         const stellarAmountByEmployee = new Map<number, string>();
         if (stellarInputs.length) {
-          const fundingAddress = process.env.CHIPNET_CROSSCHAIN_PUSD_ADDRESS?.trim();
+          payrollStage = "Stellar funding quote";
+          const fundingAddress = (process.env.CHIPNET_CROSSCHAIN_PUSD_ADDRESS || process.env.CHIPNET_CROSSCHAIN_DEPOSIT_ADDRESS)?.trim();
           if (!fundingAddress) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "The project Chipnet PUSD deposit address is not configured for Stellar payroll." });
           const decodedFunding = cashAddressToLockingBytecode(fundingAddress);
           if (typeof decodedFunding === "string" || decodedFunding.prefix !== "bchtest" || !decodedFunding.tokenSupport) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "The configured Stellar payroll deposit must be a token-aware Chipnet PUSD address." });
@@ -1073,24 +1231,111 @@ export const appRouter = router({
           for (const item of usdcAmounts) stellarAmountByEmployee.set(item.employeeId, (item.amountAtomic * 100_000n).toString());
           stellarFunding = { address: fundingAddress, amountAtomic: (xlmRequestedTotal + usdcRequestedTotal).toString(), quote: { xlm: xlmQuote, usdc: usdcQuote } };
         }
+        const evmAmountByEmployee = new Map<number, string>();
+        if (evmInputs.length) {
+          payrollStage = "EVM payout quote";
+          const fundingAddress = evmFundingNetwork === "mainnet"
+            ? (process.env.MAINNET_CROSSCHAIN_PUSD_ADDRESS || process.env.MAINNET_CROSSCHAIN_DEPOSIT_ADDRESS)?.trim()
+            : (process.env.CHIPNET_CROSSCHAIN_PUSD_ADDRESS || process.env.CHIPNET_CROSSCHAIN_DEPOSIT_ADDRESS)?.trim();
+          if (!fundingAddress) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `Configure the ${evmFundingNetwork} PUSD deposit address before preparing EVM payroll.` });
+          const decoded = cashAddressToLockingBytecode(fundingAddress);
+          if (typeof decoded === "string" || decoded.prefix !== (evmFundingNetwork === "mainnet" ? "bitcoincash" : "bchtest") || !decoded.tokenSupport) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `The EVM payroll deposit must be a token-aware ${evmFundingNetwork} CashAddress.` });
+          requireNetworkTokenCategory("PUSD", evmFundingNetwork);
+          const amount = evmInputs.reduce((sum, item) => sum + BigInt(toAtomicAmount(item.amount, "PUSD")), 0n);
+          for (const item of evmInputs) {
+            const route = parseEvmPayrollRoute(preferredFor(item) || "")!;
+            if (route.asset === "USDC") evmAmountByEmployee.set(item.employeeId, (BigInt(toAtomicAmount(item.amount, "PUSD")) * 10_000n).toString());
+            else {
+              const usdPerEth = Number(process.env.BASE_SEPOLIA_ETH_USD_RATE || "");
+              if (!Number.isFinite(usdPerEth) || usdPerEth <= 0) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Set BASE_SEPOLIA_ETH_USD_RATE to quote ETH payroll on Base Sepolia." });
+              const cents = BigInt(toAtomicAmount(item.amount, "PUSD"));
+              const eth = cents * 10n ** 18n / BigInt(Math.round(usdPerEth * 100));
+              if (eth <= 0n) throw new TRPCError({ code: "BAD_REQUEST", message: "This payroll amount is too small to produce an ETH payout." });
+              evmAmountByEmployee.set(item.employeeId, eth.toString());
+            }
+          }
+          evmFunding = { address: fundingAddress, amountAtomic: amount.toString(), quote: { sourceAsset: input.sourceAsset, sourceNetwork: evmFundingNetwork, fundingAsset: "PUSD", fundingAmountAtomic: amount.toString(), routes: evmInputs.map((item) => ({ employeeId: item.employeeId, ...parseEvmPayrollRoute(preferredFor(item) || ""), amountAtomic: evmAmountByEmployee.get(item.employeeId) })) } };
+        }
+        payrollStage = "recipient payout setup";
         const items = await Promise.all(input.items.map(async (item) => {
           const employee = employees.find((row) => row.id === item.employeeId);
           if (!employee?.email || !employee.active) throw new TRPCError({ code: "NOT_FOUND", message: "An active payroll member’s personal account could not be found." });
-          const payoutAsset = employee.preferredAsset;
+          const payoutAsset = preferredFor(item) || employee.preferredAsset;
+          const evmRoute = parseEvmPayrollRoute(payoutAsset);
+          if (evmRoute) {
+            const destination = await getPersonalEvmDestination({ email: employee.email, route: payoutAsset as EvmPayrollRoute });
+            if (!destination || !isValidEvmAddress(destination.address)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `Set a valid ${{ "base-sepolia": "Base Sepolia", "arc-testnet": "Arc Testnet", "base-mainnet": "Base Mainnet", "arc-mainnet": "Arc Mainnet" }[evmRoute.network]} receiving address for ${employee.fullName}.` });
+            return { employeeId: item.employeeId, amountAtomic: evmAmountByEmployee.get(item.employeeId)!, requestedAmountAtomic: toAtomicAmount(item.amount, "PUSD"), displayAmount: item.amount, asset: payoutAsset as "BSUSDC" | "BSETH" | "ARUSDC" | "BMUSDC" | "AMUSDC", payoutAddress: destination.address };
+          }
           if (payoutAsset === "XLM" || payoutAsset === "USDC") {
             const destination = await getPersonalStellarDestination({ email: employee.email });
             if (!destination || !validateStellarPublicKey(destination.address)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `Set a valid Stellar Testnet receiving address for ${employee.fullName} in Profile settings before creating this run.` });
             if (payoutAsset === "USDC" && !stellarInputs.some((stellarItem) => stellarItem.employeeId === item.employeeId)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "This USDC payout is missing its Stellar quote." });
             return { employeeId: item.employeeId, amountAtomic: stellarAmountByEmployee.get(item.employeeId)!, requestedAmountAtomic: toAtomicAmount(item.amount, "PUSD"), displayAmount: item.amount, asset: payoutAsset, payoutAddress: destination.address };
           }
-          requireNetworkTokenCategory("PUSD", "chipnet");
-          if (payoutAsset !== "BCH") requireNetworkTokenCategory(payoutAsset, "chipnet");
-          const quote = await getIntentQuote({ sell: "PUSD", buy: payoutAsset, amount: item.amount, network: "chipnet" });
-          const destination = await getPersonalPayrollDestination({ email: employee.email, asset: payoutAsset, network: "chipnet" });
-          if (!destination) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `Set the staff member’s default Chipnet ${payoutAsset === "BCH" ? "BCH" : "CashTokens"} address in Profile settings before creating this run.` });
-          return { employeeId: item.employeeId, amountAtomic: quote.outputAmount, requestedAmountAtomic: toAtomicAmount(item.amount, "PUSD"), displayAmount: item.amount, asset: payoutAsset, payoutAddress: destination.address };
+          const sourceAsset = payoutAsset as Asset;
+          requireNetworkTokenCategory("PUSD", input.network);
+          if (sourceAsset !== "BCH") requireNetworkTokenCategory(sourceAsset, input.network);
+          const quote = await getIntentQuote({ sell: "PUSD", buy: sourceAsset, amount: item.amount, network: input.network });
+            const destinationNetwork = input.network;
+            const destination = await getPersonalPayrollDestination({ email: employee.email, asset: sourceAsset, network: destinationNetwork });
+            if (!destination) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `Set the staff member’s default ${destinationNetwork} ${payoutAsset === "BCH" ? "BCH" : "CashTokens"} address in Profile settings before creating this run.` });
+          return { employeeId: item.employeeId, amountAtomic: quote.outputAmount, requestedAmountAtomic: toAtomicAmount(item.amount, "PUSD"), displayAmount: item.amount, asset: sourceAsset, payoutAddress: destination.address };
         }));
-        return createPayrollRunForWorkspace({ workspaceId: workspace.id, actorUserId: ctx.user.id, period: input.period, sourceAsset: input.sourceAsset, items, ...(stellarFunding ? { stellarFunding } : {}) });
+        payrollStage = "saving payroll run";
+        return await createPayrollRunForWorkspace({ workspaceId: workspace.id, actorUserId: ctx.user.id, period: input.period, sourceAsset: input.sourceAsset, dataNetwork: input.network === "mainnet" ? "mainnet" : "testnet", items, ...(stellarFunding ? { stellarFunding } : {}), ...(evmFunding ? { evmFunding } : {}) });
+        } catch (error) {
+          if (error instanceof TRPCError) throw error;
+          console.error("[Payroll] createPayrollRun failed", {
+            stage: payrollStage,
+            errorName: error instanceof Error ? error.name : typeof error,
+          });
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: `Payroll could not be prepared during ${payrollStage}. Check payout details and try again.` });
+        }
+      }),
+    recordEvmPayrollFunding: protectedProcedure
+      .input(z.object({ runId: z.number().int().positive(), txid: z.string().regex(/^[0-9a-fA-F]{64}$/), sourceSpendAtomic: z.string().regex(/^\d+$/), bchCostAtomic: z.string().regex(/^\d+$/) }))
+      .mutation(async ({ ctx, input }) => { const workspace = await getOrCreateWorkspaceForUser(ctx.user.id); await requireOrganizationWorkspace(workspace); await requireWorkspaceAdmin(ctx.user.id, workspace.id); return recordEvmPayrollFunding({ workspaceId: workspace.id, ...input }); }),
+    settleEvmPayroll: protectedProcedure
+      .input(z.object({ runId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        const workspace = await getOrCreateWorkspaceForUser(ctx.user.id);
+        await requireOrganizationWorkspace(workspace);
+        await requireWorkspaceAdmin(ctx.user.id, workspace.id);
+        const run = await getPayrollRunForWorkspace(workspace.id, input.runId);
+        if (!run?.evmFundingAddress || !run.evmFundingAmountAtomic || !run.evmFundingTxid) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "The payroll run has no saved EVM funding transaction." });
+        const items = await listPayrollItemsForRun(workspace.id, run.id);
+        const evmItems = items.filter((item) => Boolean(parseEvmPayrollRoute(item.asset)));
+        if (!evmItems.length) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "This payroll run has no Base or Arc recipients." });
+        const sourceNetwork = run.evmFundingAddress.startsWith("bitcoincash:") ? "mainnet" : "chipnet";
+        const fundingStatus = await getTransactionStatus({ txid: run.evmFundingTxid, network: sourceNetwork });
+        if (!fundingStatus.found || fundingStatus.confirmations < 1) return { status: "pending" as const, reason: `${sourceNetwork}_funding_pending` as const, confirmations: fundingStatus.confirmations };
+        const tokenCategory = getCashTokenCategories(sourceNetwork).PUSD;
+        if (!tokenCategory) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `PUSD is not configured on ${sourceNetwork}.` });
+        const funding = await verifyRecipientOutput({ txid: run.evmFundingTxid, recipientAddress: run.evmFundingAddress, expectedAsset: "PUSD", expectedAmountAtomic: run.evmFundingAmountAtomic, tokenCategory, network: sourceNetwork });
+        if (!funding.verified) throw new TRPCError({ code: "PRECONDITION_FAILED", message: `The ${sourceNetwork} transaction does not contain the PUSD reserved for EVM payroll.` });
+        const statuses = [];
+        for (const item of evmItems) {
+          const route = parseEvmPayrollRoute(item.asset)!;
+          if (!item.payoutAddress || !isValidEvmAddress(item.payoutAddress)) throw new TRPCError({ code: "BAD_REQUEST", message: "An EVM payroll receiving address is invalid." });
+          let txid = item.txid;
+          if (txid) {
+            const result = await verifyEvmTestnetPayout({ network: route.network, asset: route.asset, txid, destination: item.payoutAddress, amountAtomic: item.amountAtomic });
+            if (result.verified) { await updatePayrollItem({ workspaceId: workspace.id, itemId: item.id, status: "verified", txid }); statuses.push({ itemId: item.id, status: "verified", txid }); continue; }
+            if (result.found && !result.successful) txid = null;
+            else { statuses.push({ itemId: item.id, status: "pending", txid }); continue; }
+          }
+          if (!txid) {
+            const sent = await sendEvmTestnetPayout({ network: route.network, asset: route.asset, destination: item.payoutAddress, amountAtomic: item.amountAtomic });
+            txid = sent.txid;
+            await updatePayrollItem({ workspaceId: workspace.id, itemId: item.id, status: "broadcast", txid });
+            statuses.push({ itemId: item.id, status: "broadcast", txid });
+          }
+        }
+        const latest = await listPayrollItemsForRun(workspace.id, run.id);
+        const allVerified = latest.every((item) => item.status === "verified");
+        await updatePayrollRunStatus({ workspaceId: workspace.id, runId: run.id, status: allVerified ? "completed" : "processing" });
+        return { status: allVerified ? "completed" as const : "processing" as const, items: statuses };
       }),
     recordStellarPayrollFunding: protectedProcedure
       .input(z.object({ runId: z.number().int().positive(), txid: z.string().regex(/^[0-9a-fA-F]{64}$/), sourceSpendAtomic: z.string().regex(/^\d+$/), bchCostAtomic: z.string().regex(/^\d+$/) }))
@@ -1126,7 +1371,7 @@ export const appRouter = router({
         const items = await listPayrollItemsForRun(workspace.id, run.id);
         const stellarItems = items.filter((item) => item.asset === "XLM" || item.asset === "USDC");
         if (!stellarItems.length) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "This payroll run has no Stellar recipients." });
-        const pendingBchItems = items.filter((item) => item.asset !== "XLM" && item.asset !== "USDC" && item.status !== "verified");
+        const pendingBchItems = items.filter((item) => item.asset !== "XLM" && item.asset !== "USDC" && !parseEvmPayrollRoute(item.asset) && item.status !== "verified");
         if (pendingBchItems.length) return { status: "pending" as const, reason: "chipnet_outputs_pending" as const };
 
         let payoutTxid = run.stellarPayoutTxid;
@@ -1170,7 +1415,7 @@ export const appRouter = router({
       .input(z.object({ runId: z.number().int().positive(), sourceAsset: z.enum(["BCH", "PUSD", "MUSD"]) }))
       .mutation(async ({ ctx, input }) => { const workspace = await getOrCreateWorkspaceForUser(ctx.user.id); await requireOrganizationWorkspace(workspace); await requireWorkspaceAdmin(ctx.user.id, workspace.id); return updatePayrollRunSourceAsset({ workspaceId: workspace.id, runId: input.runId, sourceAsset: input.sourceAsset }); }),
     updatePayrollItem: protectedProcedure
-      .input(z.object({ itemId: z.number().int().positive(), status: z.enum(["quoted", "awaiting_signature", "broadcast", "verified", "failed"]), intentId: z.number().int().positive().optional(), txid: z.string().regex(/^[0-9a-fA-F]{64}$/).optional(), failureReason: z.string().max(500).optional(), amountAtomic: z.string().regex(/^\d+$/).optional() }))
+      .input(z.object({ itemId: z.number().int().positive(), status: z.enum(["quoted", "awaiting_signature", "broadcast", "verified", "failed"]), intentId: z.number().int().positive().optional(), txid: z.string().regex(/^(0x)?[0-9a-fA-F]{64}$/).optional(), failureReason: z.string().max(500).optional(), amountAtomic: z.string().regex(/^\d+$/).optional() }))
       .mutation(async ({ ctx, input }) => { const workspace = await getOrCreateWorkspaceForUser(ctx.user.id); await requireOrganizationWorkspace(workspace); await requireWorkspaceAdmin(ctx.user.id, workspace.id); return updatePayrollItem({ ...input, workspaceId: workspace.id }); }),
     verifyPayrollItem: protectedProcedure
       .input(z.object({ itemId: z.number().int().positive() }))
@@ -1220,3 +1465,5 @@ export const appRouter = router({
 });
 
 export type AppRouter = typeof appRouter;
+
+

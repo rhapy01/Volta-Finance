@@ -28,12 +28,17 @@ function outpointKey(txid: string, vout: number) {
   return `${txid.toLowerCase()}:${vout}`;
 }
 
-async function getCurrentPools(tokenId: string) {
-  const provider = getProvider("chipnet");
-  const indexedPools = await getCauldronPools(tokenId, "chipnet");
-  if (!indexedPools.length) throw new Error("Cauldron's Chipnet indexer returned no pool owners for this token");
+async function getCurrentPools(tokenId: string, network: "mainnet" | "chipnet" = "chipnet") {
+  const provider = getProvider(network);
+  const indexedPools = await getCauldronPools(tokenId, network);
+  if (!indexedPools.length) throw new Error(`Cauldron's ${network} indexer returned no pool owners for this token`);
 
-  const pools = (await Promise.all(indexedPools.map(async (indexedPool) => {
+  // The public indexer can return repeated rows for the same pool owner. Each
+  // repetition points at the same live UTXOs, which would make the swap SDK
+  // allocate against one outpoint more than once. Fetch each owner once.
+  const uniqueOwners = new Map(indexedPools.map((pool) => [pool.owner_pkh.toLowerCase(), pool]));
+  const poolsByOutpoint = new Map<string, { pool: CauldronActivePool; scriptHex: string; address: string }>();
+  const pools = (await Promise.all([...uniqueOwners.values()].map(async (indexedPool) => {
     const contract = new Contract(cauldronArtifactWithPkh(indexedPool.owner_pkh), [], { provider, contractType: "p2sh32" });
     const utxos = await provider.getUtxos(contract.tokenAddress);
     const currentTokenOutputs = utxos.filter((utxo) => utxo.token?.category.toLowerCase() === tokenId && !utxo.token?.nft);
@@ -51,8 +56,13 @@ async function getCurrentPools(tokenId: string) {
     });
   }))).flat();
 
-  if (!pools.length) throw new Error("The discovered Cauldron pools have no live unspent outputs on Chipnet");
-  return { provider, pools };
+  for (const entry of pools) {
+    const key = outpointKey(entry.pool.txid, entry.pool.tx_pos);
+    if (!poolsByOutpoint.has(key)) poolsByOutpoint.set(key, entry);
+  }
+
+  if (!poolsByOutpoint.size) throw new Error(`The discovered Cauldron pools have no live unspent outputs on ${network}`);
+  return { provider, pools: [...poolsByOutpoint.values()] };
 }
 
 /**
@@ -60,15 +70,18 @@ async function getCurrentPools(tokenId: string) {
  * swaps are aggregated by token category so a pool UTXO is never spent twice;
  * each resulting token amount is then split into the employees' exact outputs.
  */
-export async function buildChipnetPayrollBatch(input: {
+export async function buildPayrollBatch(input: {
   payouts: ChipnetPayrollPayout[];
   funding: Array<{ txid: string; vout: number; value: string; scriptHex: string }>;
   changeAddress: string;
+  network?: "mainnet" | "chipnet";
 }): Promise<BuiltSwap> {
+  const network = input.network || "chipnet";
+  const prefix = network === "mainnet" ? "bitcoincash" : "bchtest";
   if (!input.payouts.length || input.payouts.length > 50) throw new Error("A BCH payroll batch must contain one to fifty payouts");
   if (!input.funding.length) throw new Error("No BCH funding inputs were supplied for this payroll batch");
   const change = cashAddressToLockingBytecode(input.changeAddress);
-  if (typeof change === "string" || change.prefix !== "bchtest") throw new Error("Payroll change address must be a valid Chipnet address");
+  if (typeof change === "string" || change.prefix !== prefix) throw new Error(`Payroll change address must be a valid ${network} address`);
   const fundingKeys = new Set<string>();
   const walletUtxos = input.funding.map((item) => {
     const key = outpointKey(item.txid, item.vout);
@@ -79,14 +92,14 @@ export async function buildChipnetPayrollBatch(input: {
   const directOutputs = input.payouts.filter((item) => item.asset === "BCH").map((item) => {
     const recipient = cashAddressToLockingBytecode(item.address);
     const amount = BigInt(item.amountAtomic);
-    if (typeof recipient === "string" || recipient.prefix !== "bchtest" || amount < 546n) throw new Error("Each BCH payroll payout needs a valid Chipnet address and must meet the BCH dust limit");
+    if (typeof recipient === "string" || recipient.prefix !== prefix || amount < 546n) throw new Error(`Each BCH payroll payout needs a valid ${network} address and must meet the BCH dust limit`);
     return { to: item.address, amount };
   });
   const grouped = new Map<"PUSD" | "MUSD", ChipnetPayrollPayout[]>();
   for (const payout of input.payouts) {
     if (payout.asset === "BCH") continue;
     const decoded = cashAddressToLockingBytecode(payout.address);
-    if (typeof decoded === "string" || decoded.prefix !== "bchtest" || !decoded.tokenSupport) throw new Error(`${payout.asset} payroll requires a token-aware Chipnet receiving address`);
+    if (typeof decoded === "string" || decoded.prefix !== prefix || !decoded.tokenSupport) throw new Error(`${payout.asset} payroll requires a token-aware ${network} receiving address`);
     const group = grouped.get(payout.asset) || [];
     group.push(payout);
     grouped.set(payout.asset, group);
@@ -104,10 +117,10 @@ export async function buildChipnetPayrollBatch(input: {
   const fees: bigint[] = [];
 
   for (const [asset, recipients] of grouped) {
-    const category = getCashTokenCategories("chipnet")[asset];
-    if (!category) throw new Error(`${asset} has no configured Chipnet token category`);
+    const category = getCashTokenCategories(network)[asset];
+    if (!category) throw new Error(`${asset} has no configured ${network} token category`);
     const totalAmount = recipients.reduce((sum, item) => sum + BigInt(item.amountAtomic), 0n);
-    const { provider: liveProvider, pools } = await getCurrentPools(category);
+    const { provider: liveProvider, pools } = await getCurrentPools(category, network);
     const representativeAddress = recipients[0].address;
     const availableWalletUtxos = walletUtxos.filter((item) => !reservedWalletKeys.has(outpointKey(item.txid, item.vout)));
     const built = await prepareBuyTokens(
@@ -189,7 +202,7 @@ export async function buildChipnetPayrollBatch(input: {
   for (const payout of input.payouts) {
     const recipient = cashAddressToLockingBytecode(payout.address);
     if (typeof recipient === "string") throw new Error("A payroll recipient address became invalid during transaction validation");
-    const expectedCategory = payout.asset === "BCH" ? undefined : getCashTokenCategories("chipnet")[payout.asset];
+    const expectedCategory = payout.asset === "BCH" ? undefined : getCashTokenCategories(network)[payout.asset];
     const paid = transaction.outputs
       .filter((output) => binToHex(output.lockingBytecode) === binToHex(recipient.bytecode)
         && (expectedCategory === undefined ? !output.token : output.token?.category && binToHex(output.token.category) === expectedCategory))
@@ -229,36 +242,44 @@ export async function buildChipnetPayrollBatch(input: {
     minerFeeSats: (totalInputSats - fixedOutputSats - (changeAmount >= 546n ? changeAmount : 0n)).toString(),
     sourceSpendAtomic: bchSourceSpend.toString(),
     bchCostAtomic: "0",
-    route: { source: "single Chipnet Cauldron payroll composition", tokenGroups: grouped.size, cauldronFees: fees.map(String) },
+    route: { source: `single ${network} Cauldron payroll composition`, tokenGroups: grouped.size, cauldronFees: fees.map(String) },
   };
 }
 
+/** Keep the existing Chipnet function available to its current caller. */
+export async function buildChipnetPayrollBatch(input: Parameters<typeof buildPayrollBatch>[0]) {
+  return buildPayrollBatch({ ...input, network: "chipnet" });
+}
+
 /** One PUSD-funded transaction for direct PUSD payouts plus BCH recipients. */
-export async function buildChipnetPusdPayrollBatch(input: {
+export async function buildPusdPayrollBatch(input: {
   payouts: ChipnetPayrollPayout[];
   funding: Array<{ txid: string; vout: number; value: string; scriptHex: string; token?: { category: string; amount: string } }>;
   changeAddress: string;
+  network?: "mainnet" | "chipnet";
 }): Promise<BuiltSwap> {
+  const network = input.network || "chipnet";
+  const prefix = network === "mainnet" ? "bitcoincash" : "bchtest";
   if (!input.payouts.length || input.payouts.length > 50) throw new Error("A PUSD payroll batch must contain one to fifty payouts");
   if (input.payouts.some((item) => item.asset === "MUSD")) throw new Error("A PUSD-to-MUSD payroll payout needs a second swap route; this one-transaction batch supports BCH and direct PUSD recipients.");
-  const category = getCashTokenCategories("chipnet").PUSD;
-  if (!category) throw new Error("PUSD has no configured Chipnet token category");
+  const category = getCashTokenCategories(network).PUSD;
+  if (!category) throw new Error(`PUSD has no configured ${network} token category`);
   const change = cashAddressToLockingBytecode(input.changeAddress);
-  if (typeof change === "string" || change.prefix !== "bchtest" || !change.tokenSupport) throw new Error("PUSD payroll requires a token-aware Chipnet change address");
+  if (typeof change === "string" || change.prefix !== prefix || !change.tokenSupport) throw new Error(`PUSD payroll requires a token-aware ${network} change address`);
   const bchRecipients = input.payouts.filter((item) => item.asset === "BCH");
   const pusdRecipients = input.payouts.filter((item) => item.asset === "PUSD");
   const targetSats = bchRecipients.reduce((sum, item) => sum + BigInt(item.amountAtomic), 0n);
   for (const payout of bchRecipients) {
     const address = cashAddressToLockingBytecode(payout.address);
-    if (typeof address === "string" || address.prefix !== "bchtest" || BigInt(payout.amountAtomic) < 546n) throw new Error("Every BCH payroll payout needs a valid Chipnet address and must meet the BCH dust limit");
+    if (typeof address === "string" || address.prefix !== prefix || BigInt(payout.amountAtomic) < 546n) throw new Error(`Every BCH payroll payout needs a valid ${network} address and must meet the BCH dust limit`);
   }
   for (const payout of pusdRecipients) {
     const address = cashAddressToLockingBytecode(payout.address);
-    if (typeof address === "string" || address.prefix !== "bchtest" || !address.tokenSupport) throw new Error("PUSD payroll requires token-aware Chipnet recipient addresses");
+    if (typeof address === "string" || address.prefix !== prefix || !address.tokenSupport) throw new Error(`PUSD payroll requires token-aware ${network} recipient addresses`);
   }
   if (targetSats === 0n) throw new Error("This batch has no BCH payout; use the direct PUSD batch path");
 
-  const { provider, pools } = await getCurrentPools(category);
+  const { provider, pools } = await getCurrentPools(category, network);
   const poolQuote = quoteLiveSell(pools.map(({ pool }) => pool), category, "PUSD", targetSats);
   const directPusd = pusdRecipients.reduce((sum, item) => sum + BigInt(item.amountAtomic), 0n);
   const tokenFunding = input.funding.filter((item) => item.token?.category.toLowerCase() === category);
@@ -355,7 +376,7 @@ export async function buildChipnetPusdPayrollBatch(input: {
     estimatedFee = BigInt(Math.ceil(Number(builder.getTransactionSize()) * PAYROLL_FEE_SATS_PER_ESTIMATED_BYTE));
     changeAmount = inputSats - fixedSats - estimatedFee;
   }
-  if (changeAmount < 0n) throw new Error(`Selected PUSD swap and wallet inputs are short by ${-changeAmount} Chipnet satoshis for this payroll transaction`);
+  if (changeAmount < 0n) throw new Error(`Selected PUSD swap and wallet inputs are short by ${-changeAmount} ${network} satoshis for this payroll transaction`);
   if (changeAmount >= 546n) bchChange.amount = changeAmount;
   else builder.outputs = fixedOutputs;
 
@@ -403,7 +424,52 @@ export async function buildChipnetPusdPayrollBatch(input: {
     feeSats: "0", feeTokenAmount: "0",
     minerFeeSats: actualMinerFeeSats.toString(),
     sourceSpendAtomic: pusdSourceSpend.toString(), bchCostAtomic: bchCost.toString(),
-    route: { source: "single Chipnet PUSD-to-BCH payroll composition", poolCount: poolInputs.length, pusdInputAmount: poolQuote.inputAmount },
+    route: { source: `single ${network} PUSD-to-BCH payroll composition`, poolCount: poolInputs.length, pusdInputAmount: poolQuote.inputAmount },
+  };
+}
+
+/** Keep the legacy Chipnet entry point for existing payroll routes. */
+export async function buildChipnetPusdPayrollBatch(input: Parameters<typeof buildPusdPayrollBatch>[0]) {
+  return buildPusdPayrollBatch({ ...input, network: "chipnet" });
+}
+
+export async function getLiveCauldronBchBuyQuote(input: { buy: CauldronAsset; amountAtomic: string; network: "mainnet" | "chipnet" }) {
+  if (input.buy === "BCH") throw new Error("A BCH funding quote needs a CashToken output");
+  const tokenId = getCashTokenCategories(input.network)[input.buy];
+  if (!tokenId) throw new Error(`${input.buy} has no configured ${input.network} token category`);
+  const { pools } = await getCurrentPools(tokenId, input.network);
+  const livePools = pools.map(({ pool }) => pool);
+  const budget = BigInt(input.amountAtomic);
+  let low = 0n;
+  let high = 1n;
+  const requiredBch = (tokens: bigint) => {
+    const allocations = computeOptimalBuy(livePools, tokens, 2n);
+    const tradeCost = allocations.reduce((sum, allocation) => sum + allocation.supplyAmount, 0n);
+    // Mirror Cauldron's conservative input-selection reserve: transaction
+    // overhead, each selected pool input, one wallet input, and token output dust.
+    const poolFeeReserve = BigInt(Math.ceil((300 + 200 * allocations.length) * 1.5));
+    const walletInputFeeReserve = BigInt(Math.ceil(141 * 1.5));
+    return tradeCost + 1_000n + poolFeeReserve + walletInputFeeReserve;
+  };
+  const cost = (tokens: bigint) => {
+    try { return requiredBch(tokens); }
+    catch { return 1n << 120n; }
+  };
+  while (high < 10n ** 18n && cost(high) <= budget) high *= 2n;
+  while (low + 1n < high) {
+    const middle = (low + high) / 2n;
+    if (cost(middle) <= budget) low = middle;
+    else high = middle;
+  }
+  if (low <= 0n) throw new Error(`Live ${input.network} Cauldron pools cannot fill this BCH amount after swap costs and the estimated miner fee`);
+  const allocations = computeOptimalBuy(livePools, low, 2n);
+  return {
+    provider: `Cauldron live ${input.network} pools` as const,
+    sell: "BCH" as const,
+    buy: input.buy,
+    inputAmount: input.amountAtomic,
+    outputAmount: low.toString(),
+    pools: allocations.length,
   };
 }
 
@@ -412,14 +478,7 @@ export async function getChipnetCauldronBuyQuote(input: { buy: CauldronAsset; am
   if (!tokenId) throw new Error(`${input.buy} has no configured Chipnet token category`);
   const { pools } = await getCurrentPools(tokenId);
   const allocations = computeOptimalBuy(pools.map(({ pool }) => pool), BigInt(input.amountAtomic), 2n);
-  return {
-    provider: "Cauldron live Chipnet pools" as const,
-    sell: "BCH" as const,
-    buy: input.buy,
-    inputAmount: allocations.reduce((sum, allocation) => sum + allocation.supplyAmount, 0n).toString(),
-    outputAmount: input.amountAtomic,
-    pools: allocations.length,
-  };
+  return { provider: "Cauldron live Chipnet pools" as const, sell: "BCH" as const, buy: input.buy, inputAmount: allocations.reduce((sum, allocation) => sum + allocation.supplyAmount, 0n).toString(), outputAmount: input.amountAtomic, pools: allocations.length };
 }
 
 function sellOutput(pools: CauldronActivePool[], tokenAmount: bigint) {

@@ -1,6 +1,6 @@
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
-import { createAccount, createUserSession, deleteUserSession, getUserByEmail, getUserForSession } from "./db";
+import { completePasswordReset, createAccount, createPasswordResetToken, createUserSession, deleteUserSession, getUserByEmail, getUserForSession } from "./db";
 
 const scrypt = promisify(scryptCallback) as (password: string, salt: string, keyLength: number, options: { N: number; r: number; p: number; maxmem: number }) => Promise<Buffer>;
 const SCRYPT_N = 32_768;
@@ -8,6 +8,7 @@ const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 const SCRYPT_BYTES = 64;
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+export const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
 
 export type PublicUser = { id: number; email: string; name: string | null; role: "user" | "admin"; createdAt: Date };
 
@@ -61,6 +62,24 @@ export async function authenticateWithPassword(emailInput: string, password: str
   if (!user || !(await verifyPassword(password, user.passwordHash))) return undefined;
   const session = await startUserSession(user.id);
   return { user, session };
+}
+
+export async function issuePasswordReset(emailInput: string) {
+  const user = await getUserByEmail(normalizeEmail(emailInput));
+  if (!user || user.loginMethod !== "email_password") return undefined;
+  const token = randomBytes(32).toString("base64url");
+  const created = await createPasswordResetToken({
+    userId: user.id,
+    tokenHash: createHash("sha256").update(token).digest("hex"),
+    expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MS),
+  });
+  return created ? { token, userId: user.id } : undefined;
+}
+
+export async function changePasswordWithReset(token: string, password: string) {
+  const passwordHash = await hashPassword(password);
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  return completePasswordReset({ tokenHash, passwordHash });
 }
 
 export async function getSessionUser(token: string | undefined) {

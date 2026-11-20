@@ -10,10 +10,22 @@ import { verifyPaymentHubWebhook } from "../integrations/paymentHub";
 
 async function startServer() {
   const app = express();
+  app.disable("x-powered-by");
+  const isDevelopment = process.env.NODE_ENV !== "production" && !process.argv.includes("--production");
+  const scriptPolicy = isDevelopment
+    ? "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'"
+    : "script-src 'self' 'wasm-unsafe-eval'";
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    res.setHeader("Content-Security-Policy", `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; ${scriptPolicy}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https: wss: ws:; frame-src 'self' https:`);
+    next();
+  });
   const server = createServer(app);
-  // Configure body parser with larger size limit for file uploads
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  app.use(express.json({ limit: "1mb" }));
+  app.use(express.urlencoded({ limit: "1mb", extended: false, parameterLimit: 100 }));
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
   app.post("/api/webhooks/paytaca/payment-hub", async (req, res) => {
     const payload = req.body as Record<string, unknown>;
@@ -59,3 +71,4 @@ async function startServer() {
 }
 
 startServer().catch(error => { console.error(error); process.exit(1); });
+
